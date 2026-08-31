@@ -2,6 +2,7 @@ from operator import itemgetter
 
 from fastapi import FastAPI
 from pydantic import BaseModel
+from starlette.responses import StreamingResponse
 
 from llm.init import init_llm
 
@@ -20,6 +21,9 @@ class Chat(BaseModel):
 
 
 @app.post("/chat")
-def chat(prompt: Chat):
-    res = run.invoke({"question": prompt.prompt}, config=config)
-    return {"message": res}
+async def chat(prompt: Chat):
+    async def stream():
+        async for chunk in run.astream({"question": prompt.prompt}, config=config):
+            yield chunk
+
+    return StreamingResponse(stream(), media_type="text/plain; charset=utf-8")
