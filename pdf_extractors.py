@@ -49,7 +49,26 @@ def simple_extractor(path: str) -> list[Document]:
         result = []
         for doc in docs:
             for chunk in md_splitter.split_text(doc.page_content):
-                chunk.metadata = {**doc.metadata, **chunk.metadata}
+                chunk.metadata = {
+                    **doc.metadata,
+                    **{
+                        k: chunk.metadata[k]
+                        for k in (
+                            "producer",
+                            "creator",
+                            "creationdate",
+                            "source",
+                            "file_path",
+                            "total_pages",
+                            "format",
+                            "title",
+                            "author",
+                            "subject",
+                            "page",
+                        )
+                        if k in chunk.metadata
+                    },
+                }
                 result.append(chunk)
 
         return result
