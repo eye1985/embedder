@@ -1,19 +1,25 @@
 from operator import itemgetter
+from pathlib import Path
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from starlette.responses import StreamingResponse
+from starlette.responses import FileResponse, StreamingResponse
 
 from llm.init import init_llm
+
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 
 app = FastAPI()
 
 run, config = itemgetter("runnable_with_history", "config")(init_llm())
 
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
 
 @app.get("/")
 def root():
-    return {"message": "Hello World"}
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 class Chat(BaseModel):
