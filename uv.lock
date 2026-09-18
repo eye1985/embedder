@@ -726,6 +726,7 @@ dependencies = [
     { name = "langchain-pymupdf4llm" },
     { name = "langchain-text-splitters" },
     { name = "langgraph" },
+    { name = "psycopg", extra = ["binary", "pool"] },
     { name = "tiktoken" },
     { name = "tokenizers" },
     { name = "transformers" },
@@ -749,6 +750,7 @@ requires-dist = [
     { name = "langchain-pymupdf4llm", specifier = ">=1.28.0" },
     { name = "langchain-text-splitters", specifier = ">=1.1.2" },
     { name = "langgraph", specifier = ">=1.2.11" },
+    { name = "psycopg", extras = ["binary", "pool"], specifier = ">=3.3.4" },
     { name = "tiktoken", specifier = ">=0.14.0" },
     { name = "tokenizers", specifier = ">=0.22.2" },
     { name = "transformers", specifier = ">=5.8.1" },
@@ -2472,6 +2474,9 @@ wheels = [
 [package.optional-dependencies]
 binary = [
     { name = "psycopg-binary", marker = "implementation_name != 'pypy'" },
+]
+pool = [
+    { name = "psycopg-pool" },
 ]
 
 [[package]]

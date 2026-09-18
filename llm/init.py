@@ -13,7 +13,9 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_openai import ChatOpenAI
 
-from pg_vector import create_pg_vector
+from db import connection
+from pg_vector import get_vector_store
+from registry import EmbeddingModel, default_model_for_user
 
 load_dotenv()
 
@@ -31,24 +33,25 @@ def get_by_session_id(session_id: str) -> BaseChatMessageHistory:
     return session_store[session_id]
 
 
-def init_llm():
-    CONNECTION_STRING = (
-        "postgresql+psycopg://postgres:admin@localhost:5432/postgres"  # Uses psycopg3!
-    )
-    VECTOR_SIZE = 1536
-    TABLE_NAME = "doc_collection"
+def init_llm(user_id: int, model: EmbeddingModel | None = None):
+    """Build the chat chain over one user's embeddings.
 
-    store = create_pg_vector(
-        connection_string=CONNECTION_STRING,
-        vector_size=VECTOR_SIZE,
-        table_name=TABLE_NAME,
-    )
+    `model` picks which embedding type to retrieve from; it defaults to the
+    user's `default_embedding_model_id`, falling back to the first active model.
+    """
+    if model is None:
+        with connection() as conn:
+            model = default_model_for_user(conn, user_id)
+
+    store = get_vector_store(model)
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
-    # texts = simple_extractor("./sample/storybook.pdf")
-
+    # The filter is what keeps one user's vectors out of another's results. It
+    # has to be applied by the search itself -- HNSW picks its top-k before any
+    # caller could filter the rows afterwards.
     retriever = store.as_retriever(
-        search_type="mmr", search_kwargs={"k": 10, "fetch_k": 50}
+        search_type="mmr",
+        search_kwargs={"k": 10, "fetch_k": 50, "filter": {"user_id": user_id}},
     )
 
     prompt = ChatPromptTemplate.from_messages(
@@ -73,6 +76,6 @@ def init_llm():
         history_messages_key="history",
     )
 
-    config = {"configurable": {"session_id": "erik-1"}}
+    config = {"configurable": {"session_id": f"user-{user_id}"}}
 
     return {"runnable_with_history": conversational_chain, "config": config}
