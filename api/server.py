@@ -1,7 +1,6 @@
 import os
 from contextlib import asynccontextmanager
 from operator import itemgetter
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -9,16 +8,13 @@ from pydantic import BaseModel
 from starlette.responses import FileResponse, StreamingResponse
 
 from add_docs import add_document, count_chunks, embed_document, find_document
+from api.ingest import PROJECT_ROOT, Ingest, resolve_pdf
 from db import close_pool, connection, get_pool
 from llm.init import init_llm
 from pg_vector import close_engines
 from registry import default_model_for_user, get_model
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 STATIC_DIR = PROJECT_ROOT / "static"
-SAMPLE_DIR = PROJECT_ROOT / "sample"
-
-DEFAULT_INGEST_PATH = "sample/storybook.pdf"
 
 # Placeholder until there is real auth -- every request is treated as this
 # user, and retrieval is scoped to their embeddings only.
@@ -63,22 +59,6 @@ async def chat(prompt: Chat, request: Request):
     return StreamingResponse(stream(), media_type="text/plain; charset=utf-8")
 
 
-class Ingest(BaseModel):
-    path: str = DEFAULT_INGEST_PATH
-    # Vector tables to embed into. Defaults to the user's default model.
-    models: list[str] | None = None
-
-
-def _resolve_pdf(path: str) -> Path:
-    """Resolve `path` inside sample/, refusing anything that escapes it."""
-    resolved = (PROJECT_ROOT / path).resolve()
-    if not resolved.is_relative_to(SAMPLE_DIR):
-        raise HTTPException(400, f"path must be inside {SAMPLE_DIR.name}/")
-    if not resolved.is_file():
-        raise HTTPException(404, f"No such file: {path}")
-    return resolved
-
-
 # Defined with `def`, not `async def`: extraction and the embedding API call
 # both block, so FastAPI runs this in a worker thread instead of stalling the
 # event loop.
@@ -93,7 +73,7 @@ def ingest_endpoint(req: Ingest | None = None):
     # The body is optional -- a bare POST ingests the default sample PDF.
     req = req or Ingest()
 
-    pdf = _resolve_pdf(req.path)
+    pdf = resolve_pdf(req.path)
 
     with connection() as conn:
         try:
