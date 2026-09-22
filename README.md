@@ -67,9 +67,13 @@ Applied 001_extensions.sql
 Applied 002_embedding_models.sql
 Applied 003_users.sql
 Applied 004_documents.sql
+Applied 006_seed_user.sql
+Applied 007_upload_jobs.sql
 Created 'emb_openai_te3_small' with vector(1536).
 Created 'emb_qwen3_0_6b' with vector(1024).
 ```
+
+`005` is the vector-table template, not a migration -- the runner skips it.
 
 **5. The seed user**
 
@@ -113,6 +117,7 @@ survive, so you can re-embed without re-extracting the PDFs.
 | `004_documents.sql` | `documents` and `document_chunks`. |
 | `005_vector_table_template.sql` | **Not a migration.** A template rendered once per registered model. |
 | `006_seed_user.sql` | Development seed user. Drop before deploying. |
+| `007_upload_jobs.sql` | `upload_jobs`, and the one-running-upload index. |
 
 Migrations are plain SQL, applied in order, and tracked in `schema_migrations`.
 To add one, drop a new `00N_name.sql` into `database/` and re-run `setup_db.py`.
@@ -150,6 +155,11 @@ a chunk may be embedded by any number of models, including none. The vector
 tables have no relationship to one another -- dropping one leaves the rest
 untouched.
 
+`upload_jobs` sits beside this rather than inside it: one row per `/upload`
+request, recording what is running and what happened. It references a document
+once one exists, with `on delete set null`, so job history neither keeps a
+deleted document alive nor breaks when one goes.
+
 Why one table per model: a pgvector column has a **fixed dimension**, so 1536-
 and 1024-wide vectors cannot share a column. Postgres partitioning does not help
 either, since all partitions share one column definition.
@@ -183,41 +193,175 @@ Both are Matryoshka-trained, so truncating degrades gracefully: register
 uv run uvicorn api.server:app --reload
 ```
 
-Serves the chat UI at `http://localhost:8000`. Retrieval is scoped to
-`CURRENT_USER_ID` (default `1`) until real auth exists.
+Three pages, all scoped to `CURRENT_USER_ID` (default `1`) until real auth
+exists:
 
-### Ingesting the sample PDF
+| page | what it does |
+| ---- | ------------ |
+| `/` | Chat over the ingested documents. |
+| `/static/upload.html` | Upload a PDF and choose which models embed it. |
+| `/static/documents.html` | List documents; download or delete them. |
+
+The routes behind them:
+
+| method | route | purpose |
+| ------ | ----- | ------- |
+| `POST` | `/chat` | Streams an answer over the user's embeddings. |
+| `GET` | `/models` | Registered models, for the upload picker. |
+| `POST` | `/upload` | Store a PDF, chunk it, embed it. |
+| `GET` | `/upload/status` | Whether an upload is running, and its outcome. |
+| `GET` | `/documents` | List documents with chunk and vector counts. |
+| `GET` | `/documents/{id}/embeddings` | Download one document as JSON. |
+| `GET` | `/embeddings` | Download every document as a zip. |
+| `DELETE` | `/documents/{id}` | Delete a document, its vectors, and its PDF. |
+| `DELETE` | `/documents/{id}/embeddings` | Delete vectors, keep the chunks. |
+
+### Chat
+
+`POST /chat` takes `{"prompt": "..."}` and streams plain text back, token by
+token, which is what the page renders as it arrives.
+
+Retrieval is built once per process in `llm/init.py`: `gpt-4o-mini` at
+temperature 0, over an MMR search of the user's default model -- `k=10` results
+drawn from `fetch_k=50` candidates, so the context favours passages that differ
+from one another rather than ten phrasings of the same one.
+
+The `user_id` filter is applied **by the search**, not after it. HNSW picks its
+top-k before any caller could scope the rows, so filtering afterwards would
+quietly return fewer than `k` results -- or none -- once a second user exists.
+
+Conversation history is per user, in memory, and unbounded: it resets on
+restart and grows for as long as the process lives. `get_by_session_id` in
+`llm/init.py` is the one place to change for durable or trimmed history.
+
+### Uploading a PDF
 
 ```bash
-curl -X POST http://localhost:8000/ingest
+curl -X POST http://localhost:8000/upload \
+  -F 'file=@sample/storybook.pdf' \
+  -F 'models=emb_openai_te3_small'
 ```
 
-Extracts `sample/storybook.pdf`, stores its chunks, and embeds them with the
-user's default model. Takes roughly 40 seconds, most of it PDF extraction.
-
-**Safe to call twice.** The document is stored once per source path, and each
-model skips chunks it has already embedded -- so a repeat call re-reads the PDF
-but does not pay for the same vectors again:
+The file is written to `uploads/` (git-ignored), extracted, chunked, and
+embedded. `models` is a repeated field of vector table names; omit it and the
+user's default model is used. Naming several embeds the same chunks once per
+model -- the text is extracted and stored only once either way.
 
 ```json
-{"document_id": "97d1...", "source_uri": "sample/storybook.pdf",
- "reused_existing_document": true, "chunks": 155,
- "embedded": {"emb_openai_te3_small": 0}}
+{"document_id": "97d1...", "source_uri": "uploads/storybook.pdf",
+ "reused_existing_document": false, "chunks": 155,
+ "embedded": {"emb_openai_te3_small": 155}}
 ```
 
-To embed the same document with another model, name its table:
+Roughly 40 seconds for the sample PDF, most of it extraction. The whole
+pipeline runs inside the request -- the point at which this would need a job
+queue instead.
+
+| response | cause |
+| -------- | ----- |
+| 400 | Not a `.pdf`, no filename, or a model with no vector table. |
+| 404 | No `embedding_models` row for a named table. |
+| 409 | A document with that filename already exists. |
+| 413 | Over the 50MB limit. |
+| 415 | The bytes do not start with `%PDF`. |
+| 422 | No file posted, or the extractor found no text. |
+| 502 | The embedding call failed. Nothing was stored. |
+| 503 | The provider is unusable here -- e.g. its packages are not installed. |
+
+A failed upload stores nothing: the document, its chunks and the file are
+removed before the error returns, so the same filename can be retried.
+
+**One upload at a time.** A second one while the first is running returns 409.
+That is also what makes the filename check safe: two concurrent uploads of one
+name would both pass the `find_document` check before either committed, and
+store the document twice.
+
+**The request outlives the page that started it.** `/upload` is a sync `def`,
+so it runs in a threadpool thread that no client disconnect can cancel --
+closing or reloading the tab does not stop the work. `GET /upload/status` is
+how a reloaded page finds its way back:
+
+```json
+{"active": true, "filename": "storybook.pdf", "models": [],
+ "elapsed_seconds": 12.4, "last": null}
+```
+
+Once finished, `active` is false and `last` carries the result (or the error)
+for two minutes, so a page that reloads just as the upload ends still sees what
+happened.
+
+State lives in `upload_jobs`, one row per request, so it survives a restart and
+is visible to every process. The one-upload rule is a partial unique index --
+
+```sql
+create unique index upload_jobs_one_running_per_user
+    on upload_jobs (user_id) where status = 'running';
+```
+
+-- so a second concurrent upload fails its insert rather than racing the first
+past a check-then-act.
+
+Durable state brings its own failure: a process killed mid-upload leaves a row
+claiming to be running, and that index would lock the user out for good. The
+lifespan startup sweeps them, marking each `interrupted` and deleting any
+document left with chunks but no vectors -- a crash between the commit and the
+embedding, which `/upload` could not otherwise retry because the filename would
+be taken. A graceful restart does not need this: uvicorn waits for in-flight
+requests, so the job finishes normally.
+
+The sweep assumes **one process**. Run several workers and each would clear the
+others' live jobs at startup; that is the point to swap it for a heartbeat.
+
+**A filename already taken is refused, not overwritten.** Chunks are extracted
+once per document, so overwriting the file would leave the stored chunks
+describing content that no longer exists. Rename, or delete the document first.
+
+`GET /models` lists what the picker offers -- every registered model, with
+`available` false for one whose vector table `setup_db.py` has not created.
+
+### Listing and downloading
 
 ```bash
-curl -X POST http://localhost:8000/ingest \
-  -H 'content-type: application/json' \
-  -d '{"models": ["emb_qwen3_0_6b"]}'
+curl http://localhost:8000/documents
+curl -OJ http://localhost:8000/documents/<document_id>/embeddings
+curl -OJ http://localhost:8000/embeddings
 ```
 
-`path` defaults to `sample/storybook.pdf` and is constrained to `sample/`;
-anything escaping it returns 400.
+`/documents` returns each document with its chunk count and per-model vector
+counts. The second downloads one document as JSON; the third downloads every
+document as a zip of JSON files plus a `manifest.json`.
 
-This route **spends against your OpenAI key** and has no auth. It is a
-development convenience -- gate or remove it before deploying.
+A chunk carries its text and metadata once, with `embeddings` keyed by vector
+table -- so a document embedded by three models is one file, not three:
+
+```json
+{"chunk_id": "c41d...", "chunk_index": 0,
+ "content": "Once upon a time...",
+ "metadata": {"page": 1, "total_pages": 24},
+ "embeddings": {"emb_openai_te3_small": [0.013, ...],
+                "emb_qwen3_0_6b": [-0.008, ...]}}
+```
+
+A `null` there means that model holds no vector for that chunk.
+
+### Deleting
+
+```bash
+curl -X DELETE http://localhost:8000/documents/<document_id>
+curl -X DELETE 'http://localhost:8000/documents/<document_id>/embeddings?model=emb_qwen3_0_6b'
+```
+
+The first removes the document, its chunks, every vector for them, and the
+uploaded PDF -- one `DELETE` on `documents`, with `ON DELETE CASCADE` carrying
+it through `document_chunks` into each vector table. A document ingested from
+`sample/` keeps its file; those are the repo's, not a user's.
+
+The second removes vectors only, for one model or (with `model` omitted) all of
+them. The chunks survive, so the text does not need re-extracting -- but no
+route re-embeds them yet, so use `embed_document` from Python for that.
+
+These routes **spend against your OpenAI key** and have no auth. They are a
+development convenience -- gate them before deploying.
 
 ### From Python
 
@@ -231,13 +375,28 @@ from pdf_extractors import simple_extractor
 
 with connection() as conn:
     models = [get_model(conn, table_name="emb_openai_te3_small")]
-    ingest(conn, user_id=1, texts=simple_extractor("./sample/storybook.pdf"),
-           models=models, title="storybook", source_uri="./sample/storybook.pdf")
+    ingest(conn, user_id=1, texts=simple_extractor("sample/storybook.pdf"),
+           models=models, title="storybook", source_uri="sample/storybook.pdf")
 ```
 
 `ingest` stores the document and its chunks, then embeds them with each model
 given. To add a second model later, call `embed_document` -- chunks already
 embedded by that model are skipped, so it only does the missing work.
+
+`source_uri` is the key `/upload` dedupes on, and it is matched as an exact
+string: write it exactly as the app would (`sample/storybook.pdf`, no `./`), or
+the same file ends up stored twice.
+
+This is also the only way to embed a document that already exists -- no HTTP
+route does it, since `/upload` refuses a filename that is already taken:
+
+```python
+from add_docs import embed_document
+
+with connection() as conn:
+    embed_document(conn, document_id, get_model(conn, table_name="emb_qwen3_0_6b"))
+    conn.commit()
+```
 
 ## Layout
 
@@ -249,8 +408,12 @@ embedded by that model are skipped, so it only does the missing work.
 | `setup_db.py` | Migration runner and vector-table creation. The only place that runs DDL. |
 | `add_docs.py` | Chunking, `documents`/`document_chunks` writes, per-model embedding. |
 | `pdf_extractors.py` | PDF to Markdown `Document`s, split on heading structure. |
+| `main.py` | Empty stub. The app is started through `api.server`, not this. |
 | `llm/init.py` | Builds the retrieval chain for one user. |
 | `api/server.py` | FastAPI app; opens and closes the pools via lifespan. |
+| `api/ingest.py` | Upload validation, job tracking, the extract/store/embed pipeline. |
+| `api/documents.py` | Document listing, the JSON/zip export, and deletion. |
+| `static/` | The three demo pages: chat, upload, documents. |
 | `database/` | SQL migrations and the vector-table template. |
 
 ### Schema is created once, on purpose

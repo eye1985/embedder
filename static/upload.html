@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Upload</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="header">
+        <h1>Upload</h1>
+        <nav class="nav">
+          <a href="/">Chat</a>
+          <a href="/static/upload.html" class="current">Upload</a>
+          <a href="/static/documents.html">Documents</a>
+        </nav>
+      </header>
+
+      <form id="form" class="panel">
+        <label id="drop" class="drop" for="file">
+          <input id="file" type="file" accept="application/pdf,.pdf" hidden />
+          <span class="drop-title">Choose a PDF</span>
+          <span class="drop-hint">or drag one here &middot; 50MB max</span>
+        </label>
+
+        <p id="chosen" class="chosen" hidden></p>
+
+        <fieldset class="models">
+          <legend>Embed with</legend>
+          <div id="models" class="model-options">
+            <p class="muted">Loading models&hellip;</p>
+          </div>
+        </fieldset>
+
+        <button id="submit" type="submit" disabled>Upload and embed</button>
+
+        <p class="note">
+          The text is extracted and chunked once; each model embeds those same
+          chunks. Extraction and embedding both run inside the request, so a
+          large PDF can take a while.
+        </p>
+      </form>
+
+      <div id="status" class="list"></div>
+    </main>
+
+    <script src="/static/upload.js"></script>
+  </body>
+</html>
