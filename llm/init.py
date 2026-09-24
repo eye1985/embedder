@@ -37,7 +37,7 @@ def init_llm(user_id: int, model: EmbeddingModel | None = None):
     """Build the chat chain over one user's embeddings.
 
     `model` picks which embedding type to retrieve from; it defaults to the
-    user's `default_embedding_model_id`, falling back to the first active model.
+    user's `default_embedding_model_id`, which every user row has to name.
     """
     if model is None:
         with connection() as conn:

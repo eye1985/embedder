@@ -64,17 +64,15 @@ def get_model(
 
 
 def default_model_for_user(conn: psycopg.Connection, user_id: int) -> EmbeddingModel:
-    """The user's chosen model, falling back to the lowest-id active one."""
+    """The user's chosen model. Every user row has to name one."""
     row = conn.execute(
         "select default_embedding_model_id from users where id = %s", (user_id,)
     ).fetchone()
     if row is None:
         raise LookupError(f"No user with id {user_id}.")
-
-    if row[0] is not None:
-        return get_model(conn, model_id=row[0])
-
-    models = list_models(conn)
-    if not models:
-        raise LookupError("No active embedding models registered.")
-    return models[0]
+    if row[0] is None:
+        raise LookupError(
+            f"User {user_id} has no default_embedding_model_id. The column is "
+            f"not null, so this means the row predates that constraint."
+        )
+    return get_model(conn, model_id=row[0])

@@ -4,9 +4,9 @@
 --
 -- Drop this migration before deploying anywhere real.
 --
--- The default model is pinned rather than left null so test runs are
--- deterministic; clear it to exercise the "first active model" fallback in
--- registry.default_model_for_user().
+-- The default model is required -- `default_embedding_model_id` is not null,
+-- and registry.default_model_for_user() raises rather than guessing one. Every
+-- insert into `users` has to name the model explicitly, as this one does.
 
 insert into users (email, default_embedding_model_id)
 select 'testuser@mail.com', id
