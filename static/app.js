@@ -10,14 +10,20 @@ function el(tag, className, text) {
   return node;
 }
 
-function addMessage(role, text = "") {
+// Returns the body, which is what the stream writes into; the turn around it
+// is reachable as its parent when a failed reply has to be pulled back out.
+function addTurn(role, label, text = "") {
   const empty = messages.querySelector(".empty");
   if (empty) empty.remove();
 
-  const node = el("div", `msg ${role}`, text);
-  messages.appendChild(node);
+  const turn = el("div", `turn ${role}`);
+  turn.append(el("div", "turn-role", label));
+  const body = el("div", "turn-body", text);
+  turn.append(body);
+
+  messages.appendChild(turn);
   scrollToBottom();
-  return node;
+  return body;
 }
 
 function scrollToBottom() {
@@ -27,9 +33,14 @@ function scrollToBottom() {
 function autoGrow() {
   input.style.height = "auto";
   input.style.height = `${input.scrollHeight}px`;
+  // The field grows to fit, so a bar is only wanted once max-height has
+  // stopped it growing.
+  input.style.overflowY =
+    input.scrollHeight > input.clientHeight ? "auto" : "hidden";
 }
 
 input.addEventListener("input", autoGrow);
+autoGrow();
 
 input.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
@@ -44,12 +55,12 @@ form.addEventListener("submit", async (event) => {
   const prompt = input.value.trim();
   if (!prompt || sendButton.disabled) return;
 
-  addMessage("user", prompt);
+  addTurn("user", "You", prompt);
   input.value = "";
   autoGrow();
   sendButton.disabled = true;
 
-  const reply = addMessage("assistant");
+  const reply = addTurn("assistant", "Assistant");
   reply.classList.add("pending");
 
   try {
@@ -75,8 +86,8 @@ form.addEventListener("submit", async (event) => {
     }
     reply.textContent += decoder.decode();
   } catch (error) {
-    reply.remove();
-    addMessage("error", error.message || "Something went wrong.");
+    reply.parentElement.remove();
+    addTurn("error", "Error", error.message || "Something went wrong.");
   } finally {
     reply.classList.remove("pending");
     sendButton.disabled = false;

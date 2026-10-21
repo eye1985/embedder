@@ -9,13 +9,34 @@ function el(tag, className, text) {
   return node;
 }
 
+const DATE = new Intl.DateTimeFormat(undefined, {
+  day: "numeric",
+  month: "short",
+  year: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
 function formatDate(iso) {
   const date = new Date(iso);
-  return Number.isNaN(date.valueOf()) ? iso : date.toLocaleString();
+  return Number.isNaN(date.valueOf()) ? iso : DATE.format(date);
 }
 
 function showError(message) {
   list.prepend(el("p", "error-box", message));
+}
+
+function emptyState() {
+  const box = el("div", "empty");
+  box.append(el("p", "empty-title", "Nothing ingested yet"));
+  box.append(
+    el(
+      "p",
+      "empty-note",
+      "Upload a PDF and it will be chunked, embedded and listed here.",
+    ),
+  );
+  return box;
 }
 
 // Every switch on this page writes through the same path: on failure the
@@ -134,35 +155,51 @@ async function removeDocument(doc, button) {
   }
 }
 
-function card(doc) {
-  const item = el("article", "card");
+// The master switch. Independent of the per-model ones below: both have to be
+// on for a chunk to be retrievable, and turning this off leaves the per-model
+// state alone so turning it back on restores it.
+function searchSwitch(doc) {
+  const label = el("label", "switch");
 
-  const head = el("div", "card-head");
-  head.append(el("h2", "card-title", doc.title || "Untitled"));
-
-  const actions = el("div", "card-buttons");
-
-  // The master switch. Independent of the per-model ones below: both have to
-  // be on for a chunk to be retrievable, and turning this off leaves the
-  // per-model state alone so turning it back on restores it.
-  const search = el("label", "switch");
-  const searchBox = document.createElement("input");
-  searchBox.type = "checkbox";
-  searchBox.checked = doc.searchable;
-  searchBox.addEventListener("change", async () => {
-    searchBox.disabled = true;
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = doc.searchable;
+  box.addEventListener("change", async () => {
+    box.disabled = true;
     await send(`/documents/${doc.document_id}`, "PATCH", {
-      searchable: searchBox.checked,
+      searchable: box.checked,
     });
     // Reloaded either way: the model radios are only live while the document
     // is searchable, and on failure this puts the switch back on whatever the
     // server still has.
     await load();
   });
-  search.append(searchBox);
-  search.append(el("span", null, "Searchable"));
-  actions.append(search);
 
+  label.append(box);
+  label.append(el("span", null, "Searchable"));
+  return label;
+}
+
+function card(doc) {
+  const item = el("article", "doc");
+
+  const head = el("div", "doc-head");
+  head.append(el("h2", "doc-title", doc.title || "Untitled"));
+  head.append(searchSwitch(doc));
+  item.append(head);
+
+  const meta = el("p", "doc-meta");
+  meta.append(el("span", null, doc.source_uri || "no source"));
+  meta.append(el("span", null, `${doc.chunks.toLocaleString()} chunks`));
+  meta.append(el("span", null, formatDate(doc.created_at)));
+  item.append(meta);
+
+  // Chips and the row's own actions share a line, so a document reads as one
+  // block rather than four stacked rows.
+  const foot = el("div", "doc-foot");
+  foot.append(modelChoice(doc));
+
+  const actions = el("div", "doc-actions");
   const link = el("a", "button small", "Download JSON");
   link.href = `/documents/${doc.document_id}/embeddings`;
   actions.append(link);
@@ -172,19 +209,10 @@ function card(doc) {
   remove.addEventListener("click", () => removeDocument(doc, remove));
   actions.append(remove);
 
-  head.append(actions);
-  item.append(head);
+  foot.append(actions);
+  item.append(foot);
 
-  const meta = el("p", "card-meta");
-  meta.append(el("span", null, doc.source_uri || "no source"));
-  meta.append(el("span", "dot", "·"));
-  meta.append(el("span", null, `${doc.chunks.toLocaleString()} chunks`));
-  meta.append(el("span", "dot", "·"));
-  meta.append(el("span", null, formatDate(doc.created_at)));
-  item.append(meta);
-
-  item.append(modelChoice(doc));
-  if (!doc.searchable) item.classList.add("muted-card");
+  if (!doc.searchable) item.classList.add("off");
   return item;
 }
 
@@ -203,8 +231,7 @@ async function load() {
 
     if (!documents.length) {
       summary.textContent = "No documents yet.";
-      const empty = el("p", "empty", "Nothing ingested. Upload a PDF to get started.");
-      list.append(empty);
+      list.append(emptyState());
       return;
     }
 

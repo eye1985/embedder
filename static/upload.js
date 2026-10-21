@@ -221,7 +221,6 @@ function report(result) {
         : "Ingested",
     ),
   );
-  meta.append(el("span", "dot", "·"));
   meta.append(el("span", null, `${result.chunks.toLocaleString()} chunks`));
   card.append(meta);
 

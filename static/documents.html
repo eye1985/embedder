@@ -4,12 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Documents</title>
+    <script src="/static/theme.js"></script>
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
     <main class="app">
       <header class="header">
-        <h1>Documents</h1>
+        <div class="masthead">
+          <h1>Documents</h1>
+        </div>
         <nav class="nav">
           <a href="/">Chat</a>
           <a href="/static/upload.html">Upload</a>
@@ -21,7 +24,7 @@
         <p id="summary" class="muted"></p>
         <!-- A plain link, not a fetch: the browser saves the response itself,
              because /embeddings sets Content-Disposition. -->
-        <a id="download-all" class="button" href="/embeddings" hidden>
+        <a id="download-all" class="button small" href="/embeddings" hidden>
           Download all (.zip)
         </a>
       </section>

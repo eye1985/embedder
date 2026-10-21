@@ -4,12 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Chat</title>
+    <script src="/static/theme.js"></script>
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
-    <main class="app">
+    <main class="app chat">
       <header class="header">
-        <h1>Document chat</h1>
+        <div class="masthead">
+          <h1>Document chat</h1>
+        </div>
         <nav class="nav">
           <a href="/" class="current">Chat</a>
           <a href="/static/upload.html">Upload</a>
@@ -18,17 +21,28 @@
       </header>
 
       <div id="messages" class="messages">
-        <p class="empty">Ask a question about the ingested documents.</p>
+        <div class="empty">
+          <p class="empty-title">Ask a question</p>
+          <p class="empty-note">
+            Answers are drawn from the documents you have ingested, with the
+            passages retrieved before the model replies.
+          </p>
+        </div>
       </div>
 
       <form id="form" class="composer">
-        <textarea
-          id="input"
-          rows="1"
-          placeholder="Ask something&hellip;  (Enter to send, Shift+Enter for a new line)"
-          autofocus
-        ></textarea>
-        <button id="send" type="submit">Send</button>
+        <div class="composer-shell">
+          <textarea
+            id="input"
+            rows="1"
+            placeholder="Ask about your documents&hellip;"
+            autofocus
+          ></textarea>
+          <button id="send" class="button primary" type="submit">Send</button>
+        </div>
+        <p class="composer-hint">
+          Enter to send &middot; Shift + Enter for a new line
+        </p>
       </form>
     </main>
 

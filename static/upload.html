@@ -4,12 +4,15 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Upload</title>
+    <script src="/static/theme.js"></script>
     <link rel="stylesheet" href="/static/style.css" />
   </head>
   <body>
     <main class="app">
       <header class="header">
-        <h1>Upload</h1>
+        <div class="masthead">
+          <h1>Upload</h1>
+        </div>
         <nav class="nav">
           <a href="/">Chat</a>
           <a href="/static/upload.html" class="current">Upload</a>
@@ -17,7 +20,7 @@
         </nav>
       </header>
 
-      <form id="form" class="panel">
+      <form id="form" class="form">
         <label id="drop" class="drop" for="file">
           <input id="file" type="file" accept="application/pdf,.pdf" hidden />
           <span class="drop-title">Choose a PDF</span>
@@ -26,33 +29,44 @@
 
         <p id="chosen" class="chosen" hidden></p>
 
-        <fieldset class="models">
-          <legend>Embed with</legend>
+        <section class="section" role="group" aria-labelledby="models-label">
+          <h2 id="models-label" class="section-label">Embed with</h2>
           <div id="models" class="model-options"></div>
-        </fieldset>
+          <p class="note">
+            The text is extracted and chunked once; each model embeds those
+            same chunks. Extraction and embedding both run inside the request,
+            so a large PDF can take a while.
+          </p>
+        </section>
 
         <!-- Only shown once more than one model is checked: with one there is
              nothing to choose. -->
-        <fieldset id="search-choice" class="models" hidden>
-          <legend>Search this document with</legend>
+        <section
+          id="search-choice"
+          class="section"
+          role="group"
+          aria-labelledby="search-label"
+          hidden
+        >
+          <h2 id="search-label" class="section-label">
+            Search this document with
+          </h2>
           <div id="search-models" class="radios"></div>
           <p class="note">
             Every model embeds the same chunks, so this picks which one ranks
             results for this document &mdash; not what can be found. You can
             change it later from Documents.
           </p>
-        </fieldset>
+        </section>
 
-        <button id="submit" type="submit" disabled>Upload and embed</button>
-
-        <p class="note">
-          The text is extracted and chunked once; each model embeds those same
-          chunks. Extraction and embedding both run inside the request, so a
-          large PDF can take a while.
-        </p>
+        <div class="actions">
+          <button id="submit" class="button primary" type="submit" disabled>
+            Upload and embed
+          </button>
+        </div>
       </form>
 
-      <div id="status" class="list"></div>
+      <div id="status" class="status"></div>
     </main>
 
     <script src="/static/upload.js"></script>
