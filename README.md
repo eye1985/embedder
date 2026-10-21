@@ -55,9 +55,8 @@ This does two things:
 
 1. Applies every numbered migration in `database/` in filename order, recording
    each one in a `schema_migrations` table.
-2. Creates one vector table per **active** row in `embedding_models`, by
-   rendering `database/005_vector_table_template.sql` with that model's name and
-   dimension.
+2. Creates one vector table per **active** row in `embedding_models`, using that
+   model's name, dimension and distance.
 
 Safe to re-run -- applied migrations are skipped and existing tables are left
 alone. Expect:
@@ -67,18 +66,16 @@ Applied 001_extensions.sql
 Applied 002_embedding_models.sql
 Applied 003_users.sql
 Applied 004_documents.sql
-Applied 006_seed_user.sql
-Applied 007_upload_jobs.sql
+Applied 005_seed_user.sql
+Applied 006_upload_jobs.sql
 Created 'emb_openai_te3_small' with vector(1536).
-Created 'emb_qwen3_0_6b' with vector(1024).
+Created 'emb_openai_te3_large' with halfvec(3072).
 ```
-
-`005` is the vector-table template, not a migration -- the runner skips it.
 
 **5. The seed user**
 
 Retrieval is scoped per user, so the app needs a row in `users` before it will
-start. `006_seed_user.sql` creates one for you:
+start. `005_seed_user.sql` creates one for you:
 
 | id | email | default model |
 | -- | ----- | ------------- |
@@ -112,19 +109,24 @@ survive, so you can re-embed without re-extracting the PDFs.
 | file | contents |
 | ---- | -------- |
 | `001_extensions.sql` | `create extension vector` |
-| `002_embedding_models.sql` | The model registry, plus four seed rows. |
+| `002_embedding_models.sql` | The model registry, plus its seed rows. |
 | `003_users.sql` | `users`. |
 | `004_documents.sql` | `documents` and `document_chunks`. |
-| `005_vector_table_template.sql` | **Not a migration.** A template rendered once per registered model. |
-| `006_seed_user.sql` | Development seed user. Drop before deploying. |
-| `007_upload_jobs.sql` | `upload_jobs`, and the one-running-upload index. |
+| `005_seed_user.sql` | Development seed user. Drop before deploying. |
+| `006_upload_jobs.sql` | `upload_jobs`, and the one-running-upload index. |
 
 Migrations are plain SQL, applied in order, and tracked in `schema_migrations`.
 To add one, drop a new `00N_name.sql` into `database/` and re-run `setup_db.py`.
 
-Files with `template` in the name are skipped by the migration runner -- the template
-carries `{table_name}`, `{dimensions}` and `{index_ddl}` placeholders and is not
-valid SQL on its own.
+Every file here is plain, static SQL -- `psql -f` works on any of them. The one
+exception is the vector tables, whose name and width come from the registry and
+so cannot be written literally. Their DDL lives in `setup_db.py` as
+`TABLE_DDL`, composed with `psycopg.sql` so the driver quotes the identifiers.
+Keeping it there rather than in a `.sql` file is deliberate: a file that has to
+be string-formatted before it will parse is not SQL any more, and expressing
+the same thing in SQL needs plpgsql and `EXECUTE format(...)` -- more machinery
+than two substitutions deserve. The cost is that `database/` is not the whole
+schema; `MAX_HNSW_DIMENSIONS` and `INDEX_OPS` sit next to that DDL.
 
 ### Starting over
 
@@ -177,15 +179,30 @@ Then teach `get_embeddings()` in `pg_vector.py` about the provider if it is a ne
 one. `openai`, `qwen` and `huggingface` are already handled; `qwen` and
 `huggingface` need `uv add langchain-huggingface sentence-transformers`.
 
-**Keep `dimensions` at or below 2000.** pgvector cannot build an HNSW index above
-that, and `setup_db.py` will create the table without a vector index and warn
-you -- every search then scans the table in full. The two seeded models above the
-limit (`text-embedding-3-large` at 3072, `Qwen3-Embedding-8B` at 4096) ship
-`is_active = false` for this reason.
+**The column type follows `dimensions`; you do not choose it.** pgvector's HNSW
+index stops at 2000 dimensions for a `vector` column but reaches 4000 for a
+`halfvec` one, so `setup_db.py` picks whichever can be indexed:
 
-Both are Matryoshka-trained, so truncating degrades gracefully: register
-`-3-large` at 1024 or 2000 rather than 3072. At 1024 it still scores above
-`-3-small` at its full 1536.
+| `dimensions` | column | index |
+| ------------ | ------ | ----- |
+| up to 2000 | `vector(n)` | `hnsw (embedding vector_*_ops)` |
+| 2001 to 4000 | `halfvec(n)` | `hnsw (embedding halfvec_*_ops)` |
+| above 4000 | `halfvec(n)` | none -- exact scan, and `setup_db.py` warns |
+
+`halfvec` is fp16, so it halves the column at the cost of precision: components
+round to roughly three decimal places, which moves a cosine score by about 1e-6
+and leaves the top-k ordering intact. `vector -> halfvec` is an implicit cast
+and langchain binds its query vector untyped, so the operator resolves to
+halfvec and the index is still used -- nothing in the embedding path changes.
+
+This is why `text-embedding-3-large` is seeded at its native 3072:
+`halfvec(3072)` is indexable and costs 6,152 bytes a row, the same as
+`-3-small` at `vector(1536)`. Measured against the full fp32 ranking on this
+repo's own text, `halfvec(3072)` reproduced it exactly (100% recall@10) while
+truncating to `vector(1536)` -- the same bytes -- reached 92.7%. So truncation
+buys nothing here; the example above registers a narrower variant only if you
+want one for comparison. `Qwen3-Embedding-8B` at 4096 is past even the halfvec
+limit, so it would be stored unindexed.
 
 ## Usage
 
@@ -414,7 +431,7 @@ with connection() as conn:
 | `api/ingest.py` | Upload validation, job tracking, the extract/store/embed pipeline. |
 | `api/documents.py` | Document listing, the JSON/zip export, and deletion. |
 | `static/` | The three demo pages: chat, upload, documents. |
-| `database/` | SQL migrations and the vector-table template. |
+| `database/` | SQL migrations. The vector-table DDL is in `setup_db.py`. |
 
 ### Schema is created once, on purpose
 

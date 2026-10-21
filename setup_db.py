@@ -1,8 +1,7 @@
 """Schema setup.
 
 Applies the numbered migrations in `database/`, then creates one vector table
-per active row in `embedding_models` by rendering
-`database/005_vector_table_template.sql`.
+per active row in `embedding_models`.
 
 Run it once before `main.py`, and again after adding a row to
 `embedding_models` -- new rows get their table on the next run.
@@ -13,39 +12,110 @@ import glob
 import os
 
 import psycopg
+from psycopg import sql
 
 from db import MIGRATIONS_DIR, close_pool, connection, table_exists
 from registry import EmbeddingModel, get_model, list_models
 
-TEMPLATE = os.path.join(MIGRATIONS_DIR, "005_vector_table_template.sql")
+# How wide a column each element type can be and still take an HNSW index.
+# `vector` holds 4 bytes per dimension, `halfvec` 2 -- which is why halfvec
+# reaches twice as far before hitting the same index limit.
+MAX_HNSW_DIMENSIONS = {"vector": 2000, "halfvec": 4000}
 
-# pgvector refuses an HNSW index above this many dimensions.
-MAX_HNSW_DIMENSIONS = 2000
-
+# Opclass per element type and distance. The distance keys are the three values
+# `embedding_models.distance` allows.
 INDEX_OPS = {
-    "cosine": "vector_cosine_ops",
-    "inner_product": "vector_ip_ops",
-    "l2": "vector_l2_ops",
+    "vector": {
+        "cosine": "vector_cosine_ops",
+        "inner_product": "vector_ip_ops",
+        "l2": "vector_l2_ops",
+    },
+    "halfvec": {
+        "cosine": "halfvec_cosine_ops",
+        "inner_product": "halfvec_ip_ops",
+        "l2": "halfvec_l2_ops",
+    },
 }
 
 
-def index_ddl(model: EmbeddingModel) -> str:
-    """The vector index for `model`, or a comment saying why there is none."""
-    if model.dimensions > MAX_HNSW_DIMENSIONS:
-        return (
-            f"-- No vector index: {model.dimensions} dimensions exceeds pgvector's "
-            f"HNSW limit of {MAX_HNSW_DIMENSIONS}. Searches do an exact scan."
-        )
-    return (
-        f"create index on {model.table_name} "
-        f"using hnsw (embedding {INDEX_OPS[model.distance]});"
+def element_type(dimensions: int) -> str:
+    """`vector` or `halfvec`, whichever can index a column this wide.
+
+    A model past 2000 dimensions cannot have an indexed `vector` column, but
+    `halfvec` indexes to 4000, so storing it as halfvec is what makes an index
+    possible at all -- and it halves the column besides. The cost is fp16
+    precision: components round to about three decimal places, which moves a
+    cosine score by ~1e-6 and leaves the top-k ordering intact.
+
+    Nothing is gained by using halfvec below the vector limit, where the
+    full-precision column is already indexable, so that stays `vector`.
+
+    `vector -> halfvec` is an implicit cast, so a store writing vectors into a
+    halfvec column needs no changes; langchain binds its query vector untyped
+    and the operator resolves to halfvec, keeping the index in play.
+    """
+    return "vector" if dimensions <= MAX_HNSW_DIMENSIONS["vector"] else "halfvec"
+
+
+def indexable(dimensions: int) -> bool:
+    """Whether a column this wide can take an HNSW index at all.
+
+    Above 4000 even halfvec is out, so the table is created without a vector
+    index and every search over it is an exact scan.
+    """
+    return dimensions <= MAX_HNSW_DIMENSIONS[element_type(dimensions)]
+
+
+# The DDL for one model's vector table. It is built here rather than kept in
+# `database/` because the table name and the vector width come from the
+# registry, and a file that has to be string-formatted before it will parse is
+# not SQL any more. Composed with `psycopg.sql` so the identifiers are quoted
+# by the driver.
+#
+# These tables are written by hand rather than by PGEngine.init_vectorstore_table
+# so the foreign keys can be declared inline. PGVectorStore.create_sync does not
+# create a table -- it reads information_schema.columns and checks only that the
+# id, content, embedding and declared metadata columns exist, with content being
+# text/char and the embedding column being 'USER-DEFINED' or 'vector'. Every
+# extension type reports as USER-DEFINED, so halfvec satisfies it as readily as
+# vector. Constraints and indexes are not inspected, so the additions below are
+# invisible to it.
+#
+# Vector tables have no relationship to one another. Dropping one leaves every
+# other table untouched.
+#
+# Only two foreign keys are carried:
+#   chunk_id -- the real relationship. Deleting a document cascades to its
+#               chunks, which cascades to the vectors here. UNIQUE because a
+#               chunk is embedded at most once per model.
+#   user_id  -- denormalized from documents.user_id. Required, not convenience:
+#               a similarity search filters on columns of THIS table, and HNSW
+#               returns its top-k before a join to `documents` could scope the
+#               results to one user.
+#
+# Note the FK on user_id guarantees only that the user exists, NOT that it
+# matches the chunk's owner. Keeping the two in agreement is the writer's job.
+TABLE_DDL = sql.SQL("""
+    create table {table} (
+        langchain_id uuid primary key default gen_random_uuid(),
+        content      text not null,
+        embedding    {element_type}({dimensions}) not null,
+        chunk_id     uuid not null unique
+                     references document_chunks(id) on delete cascade,
+        user_id      int not null
+                     references users(id) on delete cascade,
+        langchain_metadata jsonb
     )
+""")
+
+USER_INDEX_DDL = sql.SQL("create index on {table} ({column})")
+
+VECTOR_INDEX_DDL = sql.SQL("create index on {table} using hnsw ({column} {ops})")
 
 
 def _migration_files() -> list[str]:
-    """The numbered migrations, in order. The template is not one of them."""
-    paths = sorted(glob.glob(os.path.join(MIGRATIONS_DIR, "[0-9][0-9][0-9]_*.sql")))
-    return [p for p in paths if "template" not in os.path.basename(p)]
+    """The numbered migrations, in order."""
+    return sorted(glob.glob(os.path.join(MIGRATIONS_DIR, "[0-9][0-9][0-9]_*.sql")))
 
 
 def apply_migrations(conn: psycopg.Connection) -> list[str]:
@@ -71,25 +141,45 @@ def apply_migrations(conn: psycopg.Connection) -> list[str]:
     return ran
 
 
-def create_vector_table(conn: psycopg.Connection, model: EmbeddingModel) -> bool:
-    """Render the template for `model`. Returns False if the table was there."""
+def create_vector_table(conn: psycopg.Connection, model: EmbeddingModel) -> bool | None:
+    """Create `model`'s vector table.
+
+    Returns True if it was created with an HNSW index, False if it was created
+    without one (the model is wider than pgvector will index), or None if the
+    table was already there.
+    """
     if table_exists(conn, model.table_name):
-        return False
-    with open(TEMPLATE) as fh:
-        ddl = fh.read()
+        return None
+
+    table = sql.Identifier(model.table_name)
+    element = element_type(model.dimensions)
     conn.execute(
-        ddl.format(
-            table_name=model.table_name,
-            dimensions=model.dimensions,
-            index_ddl=index_ddl(model),
+        TABLE_DDL.format(
+            table=table,
+            element_type=sql.SQL(element),
+            dimensions=sql.Literal(model.dimensions),
+        )
+    )
+    conn.execute(USER_INDEX_DDL.format(table=table, column=sql.Identifier("user_id")))
+
+    if not indexable(model.dimensions):
+        return False
+    conn.execute(
+        VECTOR_INDEX_DDL.format(
+            table=table,
+            column=sql.Identifier("embedding"),
+            ops=sql.Identifier(INDEX_OPS[element][model.distance]),
         )
     )
     return True
 
 
 def drop_vector_table(conn: psycopg.Connection, model: EmbeddingModel) -> None:
-    # The identifier comes from the registry, not from user input.
-    conn.execute(f'drop table if exists "{model.table_name}"')
+    conn.execute(
+        sql.SQL("drop table if exists {table}").format(
+            table=sql.Identifier(model.table_name)
+        )
+    )
 
 
 def main():
@@ -146,17 +236,20 @@ def main():
                 print(f"Dropped {m.table_name!r}.")
 
         for m in models:
-            if create_vector_table(conn, m):
-                print(f"Created {m.table_name!r} with vector({m.dimensions}).")
-                if m.dimensions > MAX_HNSW_DIMENSIONS:
-                    print(
-                        f"  WARNING: {m.dimensions} dimensions is above pgvector's "
-                        f"HNSW limit of {MAX_HNSW_DIMENSIONS}, so this table has no "
-                        f"vector index and every search scans it in full. Consider "
-                        f"registering the model at a truncated dimension instead."
-                    )
-            else:
+            indexed = create_vector_table(conn, m)
+            if indexed is None:
                 print(f"Table {m.table_name!r} already exists -- nothing to do.")
+                continue
+            element = element_type(m.dimensions)
+            print(f"Created {m.table_name!r} with {element}({m.dimensions}).")
+            if not indexed:
+                print(
+                    f"  WARNING: {m.dimensions} dimensions is above pgvector's "
+                    f"HNSW limit of {MAX_HNSW_DIMENSIONS['halfvec']} for "
+                    f"{element}, so this table has no vector index and every "
+                    f"search scans it in full. Consider registering the model "
+                    f"at a truncated dimension instead."
+                )
 
         conn.commit()
 

@@ -18,14 +18,30 @@ create table embedding_models (
     unique (provider, model_name, dimensions)
 );
 
--- The two models above 2000 dimensions ship inactive: pgvector's HNSW index
--- stops at 2000, so their tables would be searched by exact scan. Both support
--- Matryoshka truncation, so the practical fix is to register them at a smaller
--- `dimensions` rather than to activate them as-is.
+-- Only rows marked active get a vector table from `setup_db.py`, and the
+-- upload form only offers a model that has one.
+--
+-- `dimensions` decides the column type, which `setup_db.py` derives: up to
+-- 2000 it is vector(n), wider it is halfvec(n), which pgvector indexes to
+-- 4000. So nothing registered here has to fit under 2000.
+--
+-- text-embedding-3-large is registered at its native 3072, which lands in the
+-- halfvec tier: indexable, and 6152 bytes a row -- the same as -3-small at
+-- vector(1536). Truncating it would cost ranking accuracy for no storage
+-- saving, since fp16 over all 3072 dimensions reproduces the full-precision
+-- ranking while dropping half the dimensions does not.
+--
+-- Qwen3-Embedding-8B at 4096 is past even the halfvec index limit, so it ships
+-- inactive.
+--
+-- Qwen3-0.6B fits the index fine but ships inactive for a different reason:
+-- the provider needs langchain-huggingface and sentence-transformers, which
+-- are not dependencies yet, so `get_embeddings` cannot build it. Activate it
+-- once those are installed.
 insert into embedding_models
     (provider, model_name, dimensions, table_name, is_active)
 values
-    ('openai', 'text-embedding-3-small',     1536, 'emb_openai_te3_small', true),
-    ('openai', 'text-embedding-3-large',     3072, 'emb_openai_te3_large', false),
-    ('qwen',   'Qwen/Qwen3-Embedding-0.6B',  1024, 'emb_qwen3_0_6b',       true),
-    ('qwen',   'Qwen/Qwen3-Embedding-8B',    4096, 'emb_qwen3_8b',         false);
+    ('openai', 'text-embedding-3-small',     1536, 'emb_openai_te3_small',      true),
+    ('openai', 'text-embedding-3-large',     3072, 'emb_openai_te3_large',      true),
+    ('qwen',   'Qwen/Qwen3-Embedding-0.6B',  1024, 'emb_qwen3_0_6b',            false),
+    ('qwen',   'Qwen/Qwen3-Embedding-8B',    4096, 'emb_qwen3_8b',              false);
