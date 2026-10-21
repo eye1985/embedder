@@ -79,7 +79,27 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+class NoCacheStaticFiles(StaticFiles):
+    """Static files the browser has to revalidate before reusing.
+
+    Starlette sends `etag` and `last-modified` but no `Cache-Control`, which
+    leaves the browser free to reuse a cached copy without asking. An edited
+    page or script then keeps running the old version until a hard reload --
+    and `--reload` restarting the server does nothing about it.
+
+    `no-cache` means "revalidate", not "do not store": an unchanged file still
+    comes back 304 with no body. The header is set after the parent has
+    already decided between 200 and 304, so it lands on both.
+    """
+
+    def file_response(self, *args, **kwargs) -> Response:
+        response = super().file_response(*args, **kwargs)
+        response.headers["cache-control"] = "no-cache"
+        return response
+
+
+app.mount("/static", NoCacheStaticFiles(directory=STATIC_DIR), name="static")
 
 
 @app.exception_handler(PoolTimeout)
@@ -109,7 +129,11 @@ async def unhandled_handler(request: Request, exc: Exception):
 
 @app.get("/")
 def root():
-    return FileResponse(STATIC_DIR / "index.html")
+    # Served outside the static mount, so it needs the same header -- this is
+    # the page a browser is most likely to have cached.
+    return FileResponse(
+        STATIC_DIR / "index.html", headers={"cache-control": "no-cache"}
+    )
 
 
 class Chat(BaseModel):

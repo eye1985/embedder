@@ -56,6 +56,9 @@ async function send(url, method, body, onError = showError) {
 // locked once it is the one chosen -- a document left with no model after its
 // vectors were deleted has to be selectable, or it could never be searched
 // again.
+//
+// Nothing here is live while the document is switched off: which model would
+// answer for it is not a question until it is searched at all.
 function modelChoice(doc) {
   const row = el("div", "chips");
   const tables = Object.entries(doc.embedded).filter(([, count]) => count);
@@ -74,7 +77,7 @@ function modelChoice(doc) {
     button.name = `search-model-${doc.document_id}`;
     button.value = table;
     button.checked = chosen;
-    button.disabled = tables.length === 1 && chosen;
+    button.disabled = !doc.searchable || (tables.length === 1 && chosen);
     button.addEventListener("change", () => choose(doc, table, row));
     option.append(button);
 
@@ -142,19 +145,19 @@ function card(doc) {
   // The master switch. Independent of the per-model ones below: both have to
   // be on for a chunk to be retrievable, and turning this off leaves the
   // per-model state alone so turning it back on restores it.
-  const search = el("label", doc.searchable ? "switch" : "switch off");
+  const search = el("label", "switch");
   const searchBox = document.createElement("input");
   searchBox.type = "checkbox";
   searchBox.checked = doc.searchable;
   searchBox.addEventListener("change", async () => {
     searchBox.disabled = true;
-    const ok = await send(`/documents/${doc.document_id}`, "PATCH", {
+    await send(`/documents/${doc.document_id}`, "PATCH", {
       searchable: searchBox.checked,
     });
-    if (!ok) searchBox.checked = !searchBox.checked;
-    search.classList.toggle("off", !searchBox.checked);
-    item.classList.toggle("muted-card", !searchBox.checked);
-    searchBox.disabled = false;
+    // Reloaded either way: the model radios are only live while the document
+    // is searchable, and on failure this puts the switch back on whatever the
+    // server still has.
+    await load();
   });
   search.append(searchBox);
   search.append(el("span", null, "Searchable"));

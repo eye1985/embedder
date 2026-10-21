@@ -524,6 +524,10 @@ a.button {
   cursor: pointer;
 }
 
+.chip:has(input:disabled) {
+  cursor: default;
+}
+
 /* The model this document is retrieved through. */
 .chip.active {
   border-color: var(--accent);
@@ -551,11 +555,14 @@ a.button {
   cursor: pointer;
 }
 
-/* Out of search keeps its vectors -- dimmed, not hidden. */
-.switch.off {
-  opacity: 0.55;
-}
-
-.card.muted-card {
-  opacity: 0.6;
+/* A document out of search is dimmed by its content, never by its controls:
+   opacity on the card would take the switch with it, and the switch is the
+   one thing that has to look usable -- it is what turns the document back on.
+   The unchecked box is the off state; greying it would read as disabled. */
+.card.muted-card .card-title,
+.card.muted-card .card-meta,
+/* Only dimmed because they really are disabled here -- the switch above
+   never is, and keeps its full contrast. */
+.card.muted-card .chips {
+  opacity: 0.5;
 }
