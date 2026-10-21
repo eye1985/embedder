@@ -21,6 +21,68 @@ body {
     sans-serif;
 }
 
+/* Cross-page transitions. Same-origin navigations only, run by the browser:
+   the nav stays plain <a href>, and browsers without support just navigate. */
+@view-transition {
+  navigation: auto;
+}
+
+/* Naming the header keeps it out of the `root` snapshot, so it cross-fades in
+   place -- only the title and which link is current differ -- while the
+   content below it moves. */
+.header {
+  view-transition-name: page-header;
+}
+
+::view-transition-old(page-header),
+::view-transition-new(page-header) {
+  animation-duration: 160ms;
+}
+
+::view-transition-old(root) {
+  animation: page-out 120ms ease-in both;
+}
+
+::view-transition-new(root) {
+  animation: page-in 200ms ease-out both;
+}
+
+@keyframes page-out {
+  to {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root) {
+    animation: page-out-still 120ms ease-in both;
+  }
+
+  ::view-transition-new(root) {
+    animation: page-in-still 120ms ease-out both;
+  }
+}
+
+@keyframes page-out-still {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes page-in-still {
+  from {
+    opacity: 0;
+  }
+}
+
 .app {
   max-width: 760px;
   margin: 0 auto;
@@ -203,9 +265,13 @@ a.button {
   padding: 14px 4px;
 }
 
+/* Both hold their line open while empty: the summary and the model list
+   are filled by a fetch, and the row would otherwise grow under the
+   incoming page transition. */
 .toolbar p {
   margin: 0;
   font-size: 14px;
+  min-height: 1lh;
 }
 
 .list {
@@ -373,6 +439,7 @@ a.button {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-height: 1lh;
 }
 
 .model-options p {
