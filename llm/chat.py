@@ -13,9 +13,9 @@ from langchain_core.runnables import RunnablePassthrough
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_openai import ChatOpenAI
 
-from db import connection
-from pg_vector import get_vector_store
-from registry import EmbeddingModel, default_model_for_user
+from db.pool import connection
+from db.registry import EmbeddingModel, default_model_for_user
+from db.vectors import get_vector_store
 
 load_dotenv()
 

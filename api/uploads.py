@@ -1,4 +1,8 @@
-"""Upload handling and the ingest pipeline.
+"""Upload handling: a browser's bytes onto disk, and the job row tracking it.
+
+No pipeline here -- that is `indexing/pdf.py`. What is left is everything the
+web adds to a plain import: an untrusted filename, a size ceiling, content
+sniffing, and one upload at a time per user.
 
 PDFs reach the app one way: posted to /upload, which writes them into
 `uploads/`. The filename comes from the browser, so it is untrusted input --
@@ -11,12 +15,10 @@ from pathlib import Path
 import psycopg
 from fastapi import HTTPException, UploadFile
 
-from add_docs import add_document, count_chunks, embed_document, find_document
-from db import connection, table_exists
-from registry import list_models
-
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
-UPLOAD_DIR = PROJECT_ROOT / "uploads"
+from db.documents import delete_document, has_any_vector
+from db.pool import connection
+from db.registry import models_with_tables
+from paths import PROJECT_ROOT, UPLOAD_DIR
 
 # A demo-sized ceiling, enforced while streaming to disk so an oversized file
 # is never held in memory or left behind on disk.
@@ -35,7 +37,7 @@ def upload_filename(upload: UploadFile) -> str:
     if not name or name.startswith("."):
         raise HTTPException(400, "Upload needs a filename.")
     if not name.lower().endswith(".pdf"):
-        raise HTTPException(400, "Only .pdf files can be ingested.")
+        raise HTTPException(400, "Only .pdf files can be imported.")
     return name
 
 
@@ -81,41 +83,6 @@ def save_upload(upload: UploadFile, name: str) -> Path:
     return destination
 
 
-def ingest_pdf(conn, user_id: int, pdf: Path, models: list) -> dict:
-    """Store a PDF's chunks if new, then embed them with each model.
-
-    Chunking happens once and is independent of the models: a chunk already
-    embedded by a model is skipped, so adding a second model only does the work
-    that model is missing.
-    """
-    source_uri = str(pdf.relative_to(PROJECT_ROOT))
-    document_id = find_document(conn, user_id, source_uri)
-    reused = document_id is not None
-
-    if not reused:
-        # Imported here rather than at module scope: pdf_extractors pulls in
-        # docling, which is slow to import and not needed to serve chat.
-        from pdf_extractors import simple_extractor
-
-        texts = simple_extractor(str(pdf))
-        if not texts:
-            raise HTTPException(422, f"Extracted no text from {source_uri}")
-        document_id = add_document(
-            conn, user_id, texts, title=pdf.stem, source_uri=source_uri
-        )
-        conn.commit()
-
-    embedded = {m.table_name: embed_document(conn, document_id, m) for m in models}
-
-    return {
-        "document_id": str(document_id),
-        "source_uri": source_uri,
-        "reused_existing_document": reused,
-        "chunks": count_chunks(conn, document_id),
-        "embedded": embedded,
-    }
-
-
 # How long a finished upload stays reportable. A page that reloads just as the
 # work ends still has something to show; one opened an hour later does not.
 LAST_UPLOAD_TTL_SECONDS = 120
@@ -124,7 +91,7 @@ LAST_UPLOAD_TTL_SECONDS = 120
 #
 # Every function here takes its own short-lived connection rather than the one
 # the upload is holding. That is deliberate: the upload's connection stays in a
-# transaction for the whole ingest, so a job row written on it would be
+# transaction for the whole import, so a job row written on it would be
 # invisible to everyone else until the work finished -- which is exactly when
 # the row stops being interesting. Committing separately is what lets a
 # reloaded page, or a second request, see that an upload is running.
@@ -247,27 +214,6 @@ def upload_status(user_id: int) -> dict:
     }
 
 
-def _has_any_vector(conn: psycopg.Connection, document_id) -> bool:
-    """Whether any registered model holds a vector for this document.
-
-    Every model is checked, not just the default: an upload can name several,
-    and one that got through means the ingest was not wasted.
-    """
-    for model in list_models(conn, active_only=False):
-        if not table_exists(conn, model.table_name):
-            continue
-        # The table name comes from the registry, not from a request.
-        found = conn.execute(
-            f'select 1 from "{model.table_name}" v '
-            "join document_chunks c on c.id = v.chunk_id "
-            "where c.document_id = %s limit 1",
-            (document_id,),
-        ).fetchone()
-        if found is not None:
-            return True
-    return False
-
-
 def sweep_running_uploads(conn: psycopg.Connection) -> list[str]:
     """Clear jobs left 'running' by a process that is gone. Call at startup.
 
@@ -276,7 +222,7 @@ def sweep_running_uploads(conn: psycopg.Connection) -> list[str]:
     index would then lock that user out of uploading forever. Nothing can still
     be in flight at startup, so anything still marked running was interrupted.
 
-    A half-finished ingest is cleaned up with it. `ingest_pdf` commits the
+    A half-finished import is cleaned up with it. `indexing.pdf` commits the
     document before embedding starts, so a crash in between leaves a document
     with chunks and no vectors -- and with /upload refusing a filename that is
     taken, the user could not retry it. Only documents with no vectors at all
@@ -288,14 +234,16 @@ def sweep_running_uploads(conn: psycopg.Connection) -> list[str]:
     rows = conn.execute(
         "update upload_jobs set status = 'interrupted', finished_at = now(), "
         "error = 'The server restarted while this upload was running.' "
-        "where status = 'running' returning filename, document_id"
+        "where status = 'running' returning filename, document_id, user_id"
     ).fetchall()
 
+    readable = [m.table_name for m in models_with_tables(conn)]
+
     swept = []
-    for filename, document_id in rows:
+    for filename, document_id, user_id in rows:
         swept.append(filename)
         if document_id is None:
             continue
-        if not _has_any_vector(conn, document_id):
-            conn.execute("delete from documents where id = %s", (document_id,))
+        if not has_any_vector(conn, document_id, readable):
+            delete_document(conn, user_id, document_id)
     return swept

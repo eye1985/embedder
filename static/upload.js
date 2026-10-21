@@ -109,7 +109,7 @@ async function loadModels() {
           "model-meta",
           model.available
             ? `${model.table_name} · ${model.dimensions}d${model.is_default ? " · default" : ""}`
-            : `${model.table_name} · no vector table — run setup_db.py`,
+            : `${model.table_name} · no vector table — run python -m db.setup`,
         ),
       );
       option.append(text);

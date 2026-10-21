@@ -16,30 +16,30 @@ from starlette.responses import (
     StreamingResponse,
 )
 
-from add_docs import find_document
 from api.documents import (
-    build_archive,
     delete_document,
     delete_embeddings,
-    document_filename,
+    export_archive,
     export_document,
     list_documents,
 )
-from api.ingest import (
-    PROJECT_ROOT,
+from api.uploads import (
     begin_upload,
     finish_upload,
-    ingest_pdf,
     save_upload,
     sweep_running_uploads,
     upload_filename,
     upload_source_uri,
     upload_status,
 )
-from db import close_pool, connection, get_pool, table_exists
-from llm.init import init_llm
-from pg_vector import close_engines
-from registry import default_model_for_user, get_model, list_models
+from db.documents import find_document
+from db.pool import close_pool, connection, get_pool, table_exists
+from db.registry import default_model_for_user, get_model, list_models
+from db.vectors import close_engines
+from export import document_filename
+from indexing.pdf import ExtractionFailed, import_pdf
+from llm.chat import init_llm
+from paths import PROJECT_ROOT
 
 logger = logging.getLogger("api")
 
@@ -154,7 +154,7 @@ def _models_for(conn, names: list[str] | None):
         raise HTTPException(
             400,
             f"No vector table for {', '.join(missing)}. "
-            f"Create it with: uv run python setup_db.py",
+            f"Create it with: uv run python -m db.setup",
         )
     return models
 
@@ -163,7 +163,7 @@ def _models_for(conn, names: list[str] | None):
 def list_models_endpoint():
     """Every registered embedding model, for the upload form's picker.
 
-    `available` is what the form gates on: `setup_db.py` only creates tables
+    `available` is what the form gates on: `db/setup.py` only creates tables
     for active models, so an inactive row has nothing to embed into.
     """
     with connection() as conn:
@@ -192,7 +192,7 @@ def list_models_endpoint():
 def _discard_upload(conn, pdf):
     """Undo a half-finished upload.
 
-    `ingest_pdf` commits the document and its chunks before embedding starts --
+    `import_pdf` commits the document and its chunks before embedding starts --
     it has to, because the vector tables are written over a second pool and
     their foreign keys cannot see an uncommitted chunk. So a failure during
     embedding leaves a committed document that a rollback cannot reach, and it
@@ -219,7 +219,7 @@ def upload_endpoint(
     file: UploadFile,
     models: Annotated[list[str] | None, Form()] = None,
 ):
-    """Accept a PDF, store it under uploads/, then ingest and embed it.
+    """Accept a PDF, store it under uploads/, then chunk and embed it.
 
     `models` is a repeated form field of vector table names. Omitted, the
     user's default model is used. Naming several embeds the same chunks once
@@ -228,7 +228,7 @@ def upload_endpoint(
     A name already taken by one of the user's documents is refused with 409,
     and refused *before* the file is written. Overwriting would destroy the
     stored PDF while `find_document` matched the old row on source_uri, so the
-    new content would never be extracted -- a 200 that ingested nothing.
+    new content would never be extracted -- a 200 that imported nothing.
 
     The whole pipeline runs inside the request: a large PDF holds the
     connection for as long as extraction and the embedding API take. Fine for
@@ -262,11 +262,12 @@ def upload_endpoint(
             pdf = save_upload(file, name)
 
             try:
-                result = ingest_pdf(conn, CURRENT_USER_ID, pdf, chosen)
-            except HTTPException:
-                # Extraction refused the file before anything was stored.
+                result = import_pdf(conn, CURRENT_USER_ID, pdf, chosen)
+            except ExtractionFailed as exc:
+                # Refused before anything was stored, so there is no document
+                # row to clean up -- only the file that was just written.
                 pdf.unlink(missing_ok=True)
-                raise
+                raise HTTPException(422, str(exc)) from exc
             except Exception as exc:
                 _discard_upload(conn, pdf)
                 # Distinguish "this provider is not usable here" from "the call
@@ -344,7 +345,7 @@ def download_all_embeddings():
     """Every document the user has, as a zip of JSON files plus a manifest."""
     with connection() as conn:
         try:
-            archive, filename = build_archive(conn, CURRENT_USER_ID)
+            archive, filename = export_archive(conn, CURRENT_USER_ID)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
 
@@ -357,7 +358,7 @@ def download_all_embeddings():
 def delete_document_endpoint(document_id: uuid.UUID):
     """Delete a document, its chunks, its vectors, and its uploaded PDF.
 
-    A document ingested from sample/ keeps its file -- those are the repo's,
+    A document imported from sample/ keeps its file -- those are the repo's,
     not the user's.
     """
     with connection() as conn:

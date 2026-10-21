@@ -1,21 +1,22 @@
 """Schema setup.
 
-Applies the numbered migrations in `database/`, then creates one vector table
-per active row in `embedding_models`.
+Applies the numbered migrations in `sql/`, then creates one vector table per
+active row in `embedding_models`.
 
-Run it once before `main.py`, and again after adding a row to
-`embedding_models` -- new rows get their table on the next run.
+Run it as `uv run python -m db.setup`: once before starting the server, and
+again after adding a row to `embedding_models` -- new rows get their table on
+the next run.
 """
 
 import argparse
-import glob
-import os
+from pathlib import Path
 
 import psycopg
 from psycopg import sql
 
-from db import MIGRATIONS_DIR, close_pool, connection, table_exists
-from registry import EmbeddingModel, get_model, list_models
+from db.pool import close_pool, connection, table_exists
+from db.registry import EmbeddingModel, get_model, list_models
+from paths import MIGRATIONS_DIR
 
 # How wide a column each element type can be and still take an HNSW index.
 # `vector` holds 4 bytes per dimension, `halfvec` 2 -- which is why halfvec
@@ -67,7 +68,7 @@ def indexable(dimensions: int) -> bool:
 
 
 # The DDL for one model's vector table. It is built here rather than kept in
-# `database/` because the table name and the vector width come from the
+# `sql/` because the table name and the vector width come from the
 # registry, and a file that has to be string-formatted before it will parse is
 # not SQL any more. Composed with `psycopg.sql` so the identifiers are quoted
 # by the driver.
@@ -113,9 +114,9 @@ USER_INDEX_DDL = sql.SQL("create index on {table} ({column})")
 VECTOR_INDEX_DDL = sql.SQL("create index on {table} using hnsw ({column} {ops})")
 
 
-def _migration_files() -> list[str]:
+def _migration_files() -> list[Path]:
     """The numbered migrations, in order."""
-    return sorted(glob.glob(os.path.join(MIGRATIONS_DIR, "[0-9][0-9][0-9]_*.sql")))
+    return sorted(MIGRATIONS_DIR.glob("[0-9][0-9][0-9]_*.sql"))
 
 
 def apply_migrations(conn: psycopg.Connection) -> list[str]:
@@ -131,7 +132,7 @@ def apply_migrations(conn: psycopg.Connection) -> list[str]:
 
     ran = []
     for path in _migration_files():
-        name = os.path.basename(path)
+        name = path.name
         if name in applied:
             continue
         with open(path) as fh:

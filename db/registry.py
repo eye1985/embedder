@@ -2,12 +2,14 @@
 
 Every embedding type in the system is one row here, and each row owns exactly
 one physical vector table named by `table_name`. Postgres cannot enforce that
-link, so `setup_db.py` is what keeps the two in sync.
+link, so `db/setup.py` is what keeps the two in sync.
 """
 
 from dataclasses import dataclass
 
 import psycopg
+
+from db.pool import table_exists
 
 _COLUMNS = "id, provider, model_name, dimensions, table_name, distance, is_active"
 
@@ -76,3 +78,17 @@ def default_model_for_user(conn: psycopg.Connection, user_id: int) -> EmbeddingM
             f"not null, so this means the row predates that constraint."
         )
     return get_model(conn, model_id=row[0])
+
+
+def models_with_tables(conn: psycopg.Connection) -> list[EmbeddingModel]:
+    """Registered models whose vector table actually exists.
+
+    `list_models(active_only=False)` includes rows that were never set up --
+    `db/setup.py` creates tables for active models only -- and querying a
+    missing table raises, so those rows are dropped before any count or read.
+    """
+    return [
+        m
+        for m in list_models(conn, active_only=False)
+        if table_exists(conn, m.table_name)
+    ]

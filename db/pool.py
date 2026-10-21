@@ -25,8 +25,6 @@ DATABASE_URL = os.getenv(
 )
 SQLALCHEMY_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
-MIGRATIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "database")
-
 # --- Connection budget -------------------------------------------------------
 #
 # One driver, two pools. This pool and the one inside PGEngine both reach

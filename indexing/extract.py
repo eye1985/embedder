@@ -1,3 +1,15 @@
+"""PDF to Markdown `Document`s, split on heading structure.
+
+This is the *first* of two splits -- it yields one Document per heading
+section, which `chunk.py` then splits again by token count.
+
+Two extractors: `simple_extractor` (PyMuPDF4LLM) is what /upload uses, and
+`extract_pdf` (docling, with picture description and classification) is far
+slower and meant for a local machine.
+"""
+
+import logging
+
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
@@ -5,6 +17,8 @@ from langchain_core.documents import Document
 from langchain_docling import DoclingLoader
 from langchain_pymupdf4llm import PyMuPDF4LLMLoader
 from langchain_text_splitters import MarkdownHeaderTextSplitter
+
+logger = logging.getLogger(__name__)
 
 
 # Too heavy, use this on local machine
@@ -72,6 +86,8 @@ def simple_extractor(path: str) -> list[Document]:
                 result.append(chunk)
 
         return result
-    except ValueError as e:
-        print(f"Invalid path: {e}")
+    except ValueError:
+        # Returning empty rather than raising: the caller reports "extracted no
+        # text", which is also what a scanned PDF with no text layer produces.
+        logger.exception("could not extract %s", path)
         return []

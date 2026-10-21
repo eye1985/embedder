@@ -48,12 +48,12 @@ OPENAI_API_KEY=sk-...
 **4. Create the schema**
 
 ```bash
-uv run python setup_db.py
+uv run python -m db.setup
 ```
 
 This does two things:
 
-1. Applies every numbered migration in `database/` in filename order, recording
+1. Applies every numbered migration in `sql/` in filename order, recording
    each one in a `schema_migrations` table.
 2. Creates one vector table per **active** row in `embedding_models`, using that
    model's name, dimension and distance.
@@ -92,14 +92,14 @@ psql -h localhost -U postgres -d postgres \
   -c "insert into users (email) values ('you@example.com');"
 ```
 
-### setup_db.py options
+### db/setup.py options
 
 | command | effect |
 | ------- | ------ |
-| `uv run python setup_db.py` | Apply migrations, create tables for all active models. |
-| `uv run python setup_db.py --list` | Show every registered model and whether its table exists. |
-| `uv run python setup_db.py --model emb_qwen3_0_6b` | Set up one model's table only, active or not. |
-| `uv run python setup_db.py --recreate` | **Drops** the vector tables first. Asks for confirmation. Destroys embeddings, not documents. |
+| `uv run python -m db.setup` | Apply migrations, create tables for all active models. |
+| `uv run python -m db.setup --list` | Show every registered model and whether its table exists. |
+| `uv run python -m db.setup --model emb_qwen3_0_6b` | Set up one model's table only, active or not. |
+| `uv run python -m db.setup --recreate` | **Drops** the vector tables first. Asks for confirmation. Destroys embeddings, not documents. |
 
 `--recreate` only touches vector tables. `documents` and `document_chunks`
 survive, so you can re-embed without re-extracting the PDFs.
@@ -116,16 +116,16 @@ survive, so you can re-embed without re-extracting the PDFs.
 | `006_upload_jobs.sql` | `upload_jobs`, and the one-running-upload index. |
 
 Migrations are plain SQL, applied in order, and tracked in `schema_migrations`.
-To add one, drop a new `00N_name.sql` into `database/` and re-run `setup_db.py`.
+To add one, drop a new `00N_name.sql` into `sql/` and re-run `db/setup.py`.
 
 Every file here is plain, static SQL -- `psql -f` works on any of them. The one
 exception is the vector tables, whose name and width come from the registry and
-so cannot be written literally. Their DDL lives in `setup_db.py` as
+so cannot be written literally. Their DDL lives in `db/setup.py` as
 `TABLE_DDL`, composed with `psycopg.sql` so the driver quotes the identifiers.
 Keeping it there rather than in a `.sql` file is deliberate: a file that has to
 be string-formatted before it will parse is not SQL any more, and expressing
 the same thing in SQL needs plpgsql and `EXECUTE format(...)` -- more machinery
-than two substitutions deserve. The cost is that `database/` is not the whole
+than two substitutions deserve. The cost is that `sql/` is not the whole
 schema; `MAX_HNSW_DIMENSIONS` and `INDEX_OPS` sit next to that DDL.
 
 ### Starting over
@@ -133,7 +133,7 @@ schema; `MAX_HNSW_DIMENSIONS` and `INDEX_OPS` sit next to that DDL.
 ```bash
 psql -h localhost -U postgres -d postgres \
   -c "drop schema public cascade; create schema public;"
-uv run python setup_db.py
+uv run python -m db.setup
 ```
 
 Dropping the schema also drops the `vector` extension; migration `001` puts it
@@ -168,26 +168,26 @@ either, since all partitions share one column definition.
 
 ### Adding an embedding model
 
-Insert a row into `embedding_models` and re-run `setup_db.py`:
+Insert a row into `embedding_models` and re-run `db/setup.py`:
 
 ```sql
 insert into embedding_models (provider, model_name, dimensions, table_name)
 values ('openai', 'text-embedding-3-large', 1024, 'emb_openai_te3_large_1024');
 ```
 
-Then teach `get_embeddings()` in `pg_vector.py` about the provider if it is a new
+Then teach `get_embeddings()` in `db/vectors.py` about the provider if it is a new
 one. `openai`, `qwen` and `huggingface` are already handled; `qwen` and
 `huggingface` need `uv add langchain-huggingface sentence-transformers`.
 
 **The column type follows `dimensions`; you do not choose it.** pgvector's HNSW
 index stops at 2000 dimensions for a `vector` column but reaches 4000 for a
-`halfvec` one, so `setup_db.py` picks whichever can be indexed:
+`halfvec` one, so `db/setup.py` picks whichever can be indexed:
 
 | `dimensions` | column | index |
 | ------------ | ------ | ----- |
 | up to 2000 | `vector(n)` | `hnsw (embedding vector_*_ops)` |
 | 2001 to 4000 | `halfvec(n)` | `hnsw (embedding halfvec_*_ops)` |
-| above 4000 | `halfvec(n)` | none -- exact scan, and `setup_db.py` warns |
+| above 4000 | `halfvec(n)` | none -- exact scan, and `db/setup.py` warns |
 
 `halfvec` is fp16, so it halves the column at the cost of precision: components
 round to roughly three decimal places, which moves a cosine score by about 1e-6
@@ -215,7 +215,7 @@ exists:
 
 | page | what it does |
 | ---- | ------------ |
-| `/` | Chat over the ingested documents. |
+| `/` | Chat over the imported documents. |
 | `/static/upload.html` | Upload a PDF and choose which models embed it. |
 | `/static/documents.html` | List documents; download or delete them. |
 
@@ -238,7 +238,7 @@ The routes behind them:
 `POST /chat` takes `{"prompt": "..."}` and streams plain text back, token by
 token, which is what the page renders as it arrives.
 
-Retrieval is built once per process in `llm/init.py`: `gpt-4o-mini` at
+Retrieval is built once per process in `llm/chat.py`: `gpt-4o-mini` at
 temperature 0, over an MMR search of the user's default model -- `k=10` results
 drawn from `fetch_k=50` candidates, so the context favours passages that differ
 from one another rather than ten phrasings of the same one.
@@ -249,7 +249,7 @@ quietly return fewer than `k` results -- or none -- once a second user exists.
 
 Conversation history is per user, in memory, and unbounded: it resets on
 restart and grows for as long as the process lives. `get_by_session_id` in
-`llm/init.py` is the one place to change for durable or trimmed history.
+`llm/chat.py` is the one place to change for durable or trimmed history.
 
 ### Uploading a PDF
 
@@ -334,7 +334,7 @@ once per document, so overwriting the file would leave the stored chunks
 describing content that no longer exists. Rename, or delete the document first.
 
 `GET /models` lists what the picker offers -- every registered model, with
-`available` false for one whose vector table `setup_db.py` has not created.
+`available` false for one whose vector table `db/setup.py` has not created.
 
 ### Listing and downloading
 
@@ -370,7 +370,7 @@ curl -X DELETE 'http://localhost:8000/documents/<document_id>/embeddings?model=e
 
 The first removes the document, its chunks, every vector for them, and the
 uploaded PDF -- one `DELETE` on `documents`, with `ON DELETE CASCADE` carrying
-it through `document_chunks` into each vector table. A document ingested from
+it through `document_chunks` into each vector table. A document imported from
 `sample/` keeps its file; those are the repo's, not a user's.
 
 The second removes vectors only, for one model or (with `model` omitted) all of
@@ -382,33 +382,36 @@ development convenience -- gate them before deploying.
 
 ### From Python
 
-Ingestion is also driven directly from `add_docs.py`:
+`/upload` is a thin wrapper over `import_pdf`, which runs the same pipeline
+directly:
 
 ```python
-from db import connection
-from registry import get_model
-from add_docs import ingest
-from pdf_extractors import simple_extractor
+from indexing.pdf import import_pdf
+from db.pool import connection
+from db.registry import get_model
+from paths import PROJECT_ROOT
 
 with connection() as conn:
     models = [get_model(conn, table_name="emb_openai_te3_small")]
-    ingest(conn, user_id=1, texts=simple_extractor("sample/storybook.pdf"),
-           models=models, title="storybook", source_uri="sample/storybook.pdf")
+    result = import_pdf(conn, 1, PROJECT_ROOT / "sample/storybook.pdf", models)
 ```
 
-`ingest` stores the document and its chunks, then embeds them with each model
-given. To add a second model later, call `embed_document` -- chunks already
-embedded by that model are skipped, so it only does the missing work.
+`import_pdf` extracts and chunks the PDF, stores it, then embeds the chunks
+with each model given, and reports what it did. A document already stored for
+that path is reused rather than re-extracted, so this is also how you embed an
+existing document with a second model -- chunks that model already has are
+skipped, so it only does the missing work.
 
-`source_uri` is the key `/upload` dedupes on, and it is matched as an exact
-string: write it exactly as the app would (`sample/storybook.pdf`, no `./`), or
-the same file ends up stored twice.
+Pass an **absolute** path. `source_uri` is the key `/upload` dedupes on and is
+matched as an exact string, so `import_pdf` derives it by making the path
+relative to `PROJECT_ROOT` -- which is what makes a direct call and an upload
+of the same file agree on one document instead of storing it twice.
 
 This is also the only way to embed a document that already exists -- no HTTP
 route does it, since `/upload` refuses a filename that is already taken:
 
 ```python
-from add_docs import embed_document
+from indexing.embed import embed_document
 
 with connection() as conn:
     embed_document(conn, document_id, get_model(conn, table_name="emb_qwen3_0_6b"))
@@ -417,30 +420,49 @@ with connection() as conn:
 
 ## Layout
 
+Four packages, each named for what it talks to:
+
+| package | rule |
+| ------- | ---- |
+| `db/` | Talks to Postgres. All SQL lives here. |
+| `indexing/` | Turns files into embeddings. Imports `db/`, never `api/`. |
+| `llm/` | Answers questions over the embeddings. |
+| `export.py` | Turns rows into JSON and zips. No SQL, no HTTP. |
+| `api/` | Speaks HTTP. No SQL, no export format, no pipeline. |
+
+The one exception: `api/uploads.py` holds the `upload_jobs` SQL. That table
+exists only to track HTTP upload requests, so it stays with the module that
+serves them.
+
 | file | role |
 | ---- | ---- |
-| `db.py` | Connection settings and the psycopg pool. |
-| `registry.py` | Reads `embedding_models`; resolves a model to its table. |
-| `pg_vector.py` | Embedding-service factory, cached engines and vector stores. |
-| `setup_db.py` | Migration runner and vector-table creation. The only place that runs DDL. |
-| `add_docs.py` | Chunking, `documents`/`document_chunks` writes, per-model embedding. |
-| `pdf_extractors.py` | PDF to Markdown `Document`s, split on heading structure. |
-| `main.py` | Empty stub. The app is started through `api.server`, not this. |
-| `llm/init.py` | Builds the retrieval chain for one user. |
+| `paths.py` | `PROJECT_ROOT` and the migrations directory, resolved once. |
+| `db/pool.py` | Connection settings and the psycopg pool. |
+| `db/registry.py` | Reads `embedding_models`; resolves a model to its table. |
+| `db/vectors.py` | Embedding-service factory, cached engines and vector stores. |
+| `db/setup.py` | Migration runner and vector-table creation. The only place that runs DDL. |
+| `export.py` | The export format: one document as JSON, a library as a zip. |
+| `db/documents.py` | `documents`/`document_chunks` reads, writes and deletes. |
+| `db/users.py` | The `users` table. |
+| `indexing/extract.py` | PDF to Markdown `Document`s, split on heading structure. |
+| `indexing/chunk.py` | Token-splits each section into the chunks that get embedded. |
+| `indexing/embed.py` | Writes a document's chunks into one model's vector table. |
+| `indexing/pdf.py` | `import_pdf` -- the whole pipeline, with no HTTP in it. |
+| `llm/chat.py` | Builds the retrieval chain for one user. |
 | `api/server.py` | FastAPI app; opens and closes the pools via lifespan. |
-| `api/ingest.py` | Upload validation, job tracking, the extract/store/embed pipeline. |
-| `api/documents.py` | Document listing, the JSON/zip export, and deletion. |
+| `api/uploads.py` | Upload validation, disk writes, and `upload_jobs` tracking. |
+| `api/documents.py` | Assembles the document endpoints' response shapes. |
 | `static/` | The three demo pages: chat, upload, documents. |
-| `database/` | SQL migrations. The vector-table DDL is in `setup_db.py`. |
+| `sql/` | SQL migrations. The vector-table DDL is in `db/setup.py`. |
 
 ### Schema is created once, on purpose
 
-`setup_db.py` is the only code that creates tables. The application connects to
+`db/setup.py` is the only code that creates tables. The application connects to
 existing tables and fails with a clear message if one is missing:
 
 ```
 Table 'emb_openai_te3_small' is missing or has the wrong columns.
-Create it with: uv run python setup_db.py
+Create it with: uv run python -m db.setup
 ```
 
 Creating tables at application startup instead would mean any restart could
@@ -450,7 +472,7 @@ if this grows into a deployed service, Alembic is the natural next step.
 
 ## Configuration
 
-Everything is environment variables, read in `db.py` and `pg_vector.py`:
+Everything is environment variables, read in `db/pool.py` and `db/vectors.py`:
 
 | variable | default | purpose |
 | -------- | ------- | ------- |
@@ -467,10 +489,10 @@ back one.
 
 ### Two pools
 
-There are two connection pools: the psycopg one in `db.py` for plain SQL, and
+There are two connection pools: the psycopg one in `db/pool.py` for plain SQL, and
 SQLAlchemy's inside `PGEngine` for everything `PGVectorStore` does. Both run on
 psycopg 3, so this is one driver used two ways, not two drivers. They cannot be
-merged while `PGVectorStore` is in use -- see the note at the top of `db.py`.
+merged while `PGVectorStore` is in use -- see the note at the top of `db/pool.py`.
 
 Worst case per process is `10 + 5 + 10 = 25` connections, against a Postgres
 default `max_connections` of 100. Size them down before running more than two
@@ -478,7 +500,7 @@ workers.
 
 ## Chunking
 
-Chunking happens once, in `add_docs.py`, and is deliberately **not** per-model --
+Chunking happens once, in `indexing/chunk.py`, and is deliberately **not** per-model --
 all models embed the same chunks so their results stay comparable.
 
 Defaults are 500-token chunks with 70 tokens of overlap. Smaller, focused chunks

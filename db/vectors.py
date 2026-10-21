@@ -18,8 +18,8 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_postgres import PGEngine, PGVectorStore
 from langchain_postgres.v2.indexes import DistanceStrategy
 
-from db import SQLALCHEMY_URL
-from registry import EmbeddingModel
+from db.pool import SQLALCHEMY_URL
+from db.registry import EmbeddingModel
 
 # Columns every vector table carries as real columns rather than JSON. A search
 # filters on columns of its own table, so user_id has to live here -- HNSW
@@ -32,8 +32,8 @@ DISTANCE_STRATEGIES = {
     "l2": DistanceStrategy.EUCLIDEAN,
 }
 
-# SQLAlchemy's pool, separate from the psycopg pool in db.py though both run on
-# psycopg 3. Read the connection budget note in db.py before raising these.
+# SQLAlchemy's pool, separate from the psycopg pool in `pool.py` though both run
+# on psycopg 3. Read the connection budget note there before raising these.
 ENGINE_POOL_SIZE = int(os.getenv("DB_ENGINE_POOL_SIZE", "5"))
 ENGINE_MAX_OVERFLOW = int(os.getenv("DB_ENGINE_MAX_OVERFLOW", "10"))
 
@@ -85,7 +85,7 @@ def get_vector_store(
 ) -> PGVectorStore:
     """The cached store for `model`'s vector table.
 
-    The table is not created here -- run `setup_db.py` once to create it.
+    The table is not created here -- run `db/setup.py` once to create it.
     """
     key = (connection_string, model.table_name)
     with _lock:
@@ -106,7 +106,7 @@ def get_vector_store(
     except ValueError as exc:
         raise RuntimeError(
             f"Table {model.table_name!r} is missing or has the wrong columns. "
-            f"Create it with: uv run python setup_db.py"
+            f"Create it with: uv run python -m db.setup"
         ) from exc
 
     with _lock:
