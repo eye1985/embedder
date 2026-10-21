@@ -4,6 +4,8 @@ const fileInput = document.getElementById("file");
 const chosen = document.getElementById("chosen");
 const submit = document.getElementById("submit");
 const modelOptions = document.getElementById("models");
+const searchChoice = document.getElementById("search-choice");
+const searchOptions = document.getElementById("search-models");
 const statusBox = document.getElementById("status");
 
 // An upload outlives the page that started it, so the server is asked how it
@@ -13,6 +15,9 @@ const POLL_MS = 1500;
 let pollTimer = null;
 let busy = false;
 let modelBoxes = [];
+// Rebuilt whenever the checked set changes, so it can only ever offer a model
+// that is actually being embedded.
+let searchButtons = [];
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -35,10 +40,57 @@ function chosenModels() {
   return modelBoxes.filter(({ box }) => box.checked).map(({ box }) => box.value);
 }
 
+function searchModel() {
+  const picked = searchButtons.find((button) => button.checked);
+  return picked ? picked.value : null;
+}
+
+// One model embedded means no choice to make, so the radios only appear from
+// two up. The current pick survives a rebuild if it is still being embedded.
+function refreshSearchChoice() {
+  const tables = chosenModels();
+  const keep = searchModel();
+
+  searchChoice.hidden = tables.length < 2;
+  searchOptions.replaceChildren();
+  searchButtons = [];
+
+  if (searchChoice.hidden) {
+    refreshSubmit();
+    return;
+  }
+
+  for (const { box, label } of modelBoxes) {
+    if (!box.checked) continue;
+
+    const option = el("label", "radio");
+    const button = document.createElement("input");
+    button.type = "radio";
+    button.name = "search-model";
+    button.value = box.value;
+    button.checked = box.value === keep;
+    button.disabled = busy;
+    button.addEventListener("change", refreshSubmit);
+    option.append(button);
+    option.append(el("span", "radio-name", label));
+    searchOptions.append(option);
+    searchButtons.push(button);
+  }
+
+  refreshSubmit();
+}
+
 // A file with no model picked would be stored and chunked but never embedded,
-// so both are required -- as is the upload slot being free.
+// so both are required -- as is the upload slot being free. With several
+// models the search choice is required too: the server refuses without it
+// rather than picking one invisibly.
 function refreshSubmit() {
-  submit.disabled = busy || !selected() || !chosenModels().length;
+  const tables = chosenModels();
+  submit.disabled =
+    busy ||
+    !selected() ||
+    !tables.length ||
+    (tables.length > 1 && !searchModel());
 }
 
 function setBusy(on) {
@@ -46,6 +98,7 @@ function setBusy(on) {
   fileInput.disabled = on;
   drop.classList.toggle("busy", on);
   for (const { box, available } of modelBoxes) box.disabled = on || !available;
+  for (const button of searchButtons) button.disabled = on;
   submit.textContent = on ? "Embedding…" : "Upload and embed";
   refreshSubmit();
 }
@@ -96,9 +149,9 @@ async function loadModels() {
       const box = document.createElement("input");
       box.type = "checkbox";
       box.value = model.table_name;
-      box.checked = model.is_default;
+      box.checked = model.is_upload_default;
       box.disabled = !model.available;
-      box.addEventListener("change", refreshSubmit);
+      box.addEventListener("change", refreshSearchChoice);
       option.append(box);
 
       const text = el("span", "model-text");
@@ -108,16 +161,20 @@ async function loadModels() {
           "span",
           "model-meta",
           model.available
-            ? `${model.table_name} · ${model.dimensions}d${model.is_default ? " · default" : ""}`
+            ? `${model.table_name} · ${model.dimensions}d${model.is_upload_default ? " · default" : ""}`
             : `${model.table_name} · no vector table — run python -m db.setup`,
         ),
       );
       option.append(text);
 
       modelOptions.append(option);
-      modelBoxes.push({ box, available: model.available });
+      modelBoxes.push({
+        box,
+        available: model.available,
+        label: `${model.provider} · ${model.model_name}`,
+      });
     }
-    refreshSubmit();
+    refreshSearchChoice();
   } catch (error) {
     modelOptions.replaceChildren(
       el("p", "error-box", error.message || "Could not load models."),
@@ -169,10 +226,13 @@ function report(result) {
   card.append(meta);
 
   // `embedded` counts vectors written by THIS call, so a zero means the model
-  // already held every chunk -- not that anything failed.
+  // already held every chunk -- not that anything failed. The marked chip is
+  // the model the document is now searched with.
   const chips = el("div", "chips");
   for (const [table, count] of Object.entries(result.embedded)) {
-    const chip = el("span", count ? "chip" : "chip zero");
+    const classes = [count ? "chip" : "chip zero"];
+    if (table === result.search_model) classes.push("active");
+    const chip = el("span", classes.join(" "));
     chip.append(el("span", "chip-name", table));
     chip.append(el("span", "chip-count", `+${count.toLocaleString()}`));
     chips.append(chip);
@@ -247,6 +307,8 @@ form.addEventListener("submit", async (event) => {
   const body = new FormData();
   body.append("file", file);
   for (const table of chosenModels()) body.append("models", table);
+  const searched = searchModel();
+  if (searched) body.append("search_model", searched);
 
   setBusy(true);
   showProgress(file.name, 0);

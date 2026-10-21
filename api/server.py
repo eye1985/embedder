@@ -19,6 +19,7 @@ from starlette.responses import (
 from api.documents import (
     delete_document,
     delete_embeddings,
+    embed_existing,
     export_archive,
     export_document,
     list_documents,
@@ -32,13 +33,14 @@ from api.uploads import (
     upload_source_uri,
     upload_status,
 )
-from db.documents import find_document
+from db.documents import find_document, set_searchable
+from db.embeddings import document_counts, search_groups, set_document_model
 from db.pool import close_pool, connection, get_pool, table_exists
-from db.registry import default_model_for_user, get_model, list_models
+from db.registry import get_model, list_models, upload_model_for_user
 from db.vectors import close_engines
 from export import document_filename
 from indexing.pdf import ExtractionFailed, import_pdf
-from llm.chat import init_llm
+from llm.chat import build_chat
 from paths import PROJECT_ROOT
 
 logger = logging.getLogger("api")
@@ -68,7 +70,6 @@ async def lifespan(app: FastAPI):
             ", ".join(swept),
         )
 
-    app.state.chat = init_llm(user_id=CURRENT_USER_ID)
     try:
         yield
     finally:
@@ -115,9 +116,26 @@ class Chat(BaseModel):
     prompt: str
 
 
+# Sync `def`: reading which model searches which document is a blocking
+# query, and the chain is assembled before a single token is streamed.
+# FastAPI runs this in a worker thread and then streams on the event loop.
 @app.post("/chat")
-async def chat(prompt: Chat, request: Request):
-    run, config = itemgetter("runnable_with_history", "config")(request.app.state.chat)
+def chat(prompt: Chat):
+    """Answer from the user's searchable documents.
+
+    Each document is retrieved through the one model it was given, so this
+    reads the grouping per request -- changing a document's model has to take
+    effect on the next question, not the next restart.
+    """
+    with connection() as conn:
+        groups = {
+            get_model(conn, model_id=model_id): document_ids
+            for model_id, document_ids in search_groups(conn, CURRENT_USER_ID).items()
+        }
+
+    run, config = itemgetter("runnable_with_history", "config")(
+        build_chat(CURRENT_USER_ID, groups)
+    )
 
     async def stream():
         # A streaming response commits to 200 before the first token, so a
@@ -135,7 +153,7 @@ async def chat(prompt: Chat, request: Request):
 
 
 def _models_for(conn, names: list[str] | None):
-    """The models to embed with: those named, or the user's default.
+    """The models to embed with: those named, or the user's upload model.
 
     A registered model with no vector table is rejected here rather than deep
     inside PGVectorStore, where the same mistake surfaces as a 500.
@@ -144,7 +162,7 @@ def _models_for(conn, names: list[str] | None):
         if names:
             models = [get_model(conn, table_name=name) for name in names]
         else:
-            models = [default_model_for_user(conn, CURRENT_USER_ID)]
+            models = [upload_model_for_user(conn, CURRENT_USER_ID)]
     except LookupError as exc:
         # Unknown table name, or no user row -- a client error, not a crash.
         raise HTTPException(404, str(exc)) from exc
@@ -159,18 +177,48 @@ def _models_for(conn, names: list[str] | None):
     return models
 
 
+def _search_model_for(chosen: list, table_name: str | None):
+    """Which of `chosen` the document is retrieved through.
+
+    One model embedded means no choice to make. Several and the caller has to
+    say, rather than have one picked for them -- the answers a question gets
+    depend on it, so a silent default would be a decision made invisibly.
+    """
+    if table_name is None:
+        if len(chosen) == 1:
+            return chosen[0]
+        raise HTTPException(
+            400,
+            "Embedding with more than one model needs `search_model` naming "
+            "which of them this document is searched with.",
+        )
+
+    for model in chosen:
+        if model.table_name == table_name:
+            return model
+    raise HTTPException(
+        400,
+        f"search_model {table_name!r} is not one of the models being embedded "
+        f"({', '.join(m.table_name for m in chosen)}).",
+    )
+
+
 @app.get("/models")
 def list_models_endpoint():
-    """Every registered embedding model, for the upload form's picker.
+    """Every registered embedding model, for the upload form's pickers.
 
     `available` is what the form gates on: `db/setup.py` only creates tables
     for active models, so an inactive row has nothing to embed into.
+    `documents` says how many of the user's documents each has embedded.
     """
     with connection() as conn:
         try:
-            default = default_model_for_user(conn, CURRENT_USER_ID)
+            upload = upload_model_for_user(conn, CURRENT_USER_ID)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
+
+        models = list_models(conn, active_only=False)
+        counts = document_counts(conn, CURRENT_USER_ID, [m.id for m in models])
 
         return [
             {
@@ -180,9 +228,10 @@ def list_models_endpoint():
                 "dimensions": m.dimensions,
                 "is_active": m.is_active,
                 "available": table_exists(conn, m.table_name),
-                "is_default": m.table_name == default.table_name,
+                "documents": counts.get(m.id, 0),
+                "is_upload_default": m.id == upload.id,
             }
-            for m in list_models(conn, active_only=False)
+            for m in models
         ]
 
 
@@ -218,12 +267,19 @@ def _discard_upload(conn, pdf):
 def upload_endpoint(
     file: UploadFile,
     models: Annotated[list[str] | None, Form()] = None,
+    search_model: Annotated[str | None, Form()] = None,
 ):
     """Accept a PDF, store it under uploads/, then chunk and embed it.
 
     `models` is a repeated form field of vector table names. Omitted, the
-    user's default model is used. Naming several embeds the same chunks once
+    user's upload model is used. Naming several embeds the same chunks once
     per model -- the text is extracted and stored only once either way.
+
+    `search_model` is the one of those the document is retrieved through, and
+    is required when more than one model is named. The models hold the same
+    text, so this decides which ranking questions about this document get,
+    not which of it can be reached. It can be changed later from the
+    documents page.
 
     A name already taken by one of the user's documents is refused with 409,
     and refused *before* the file is written. Overwriting would destroy the
@@ -259,10 +315,11 @@ def upload_endpoint(
                 )
 
             chosen = _models_for(conn, models)
+            searched = _search_model_for(chosen, search_model)
             pdf = save_upload(file, name)
 
             try:
-                result = import_pdf(conn, CURRENT_USER_ID, pdf, chosen)
+                result = import_pdf(conn, CURRENT_USER_ID, pdf, chosen, searched)
             except ExtractionFailed as exc:
                 # Refused before anything was stored, so there is no document
                 # row to clean up -- only the file that was just written.
@@ -354,6 +411,64 @@ def download_all_embeddings():
     )
 
 
+class Searchable(BaseModel):
+    searchable: bool
+
+
+class ReEmbed(BaseModel):
+    models: list[str] | None = None
+
+
+@app.patch("/documents/{document_id}")
+def set_document_searchable(document_id: uuid.UUID, body: Searchable):
+    """Take a document in or out of search entirely, for every model.
+
+    The vectors stay where they are, and so does the per-model state in
+    `document_embeddings` -- switching the document back on restores exactly
+    the models it had.
+    """
+    with connection() as conn:
+        try:
+            set_searchable(conn, CURRENT_USER_ID, document_id, body.searchable)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return {"document_id": str(document_id), "searchable": body.searchable}
+
+
+@app.put("/documents/{document_id}/search-model/{table_name}")
+def set_document_search_model(document_id: uuid.UUID, table_name: str):
+    """Choose which model this document is retrieved through.
+
+    Exactly one at a time. The models hold the same chunks, so this picks the
+    ranking questions about this document get -- every other model keeps its
+    vectors and simply stops being searched, which costs nothing to undo.
+    """
+    with connection() as conn:
+        try:
+            model = get_model(conn, table_name=table_name)
+            set_document_model(conn, CURRENT_USER_ID, document_id, model.id)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return {"document_id": str(document_id), "search_model": table_name}
+
+
+# Sync `def` for the same reason as /upload: this calls the embedding API.
+@app.post("/documents/{document_id}/embeddings")
+def embed_document_endpoint(document_id: uuid.UUID, body: ReEmbed):
+    """Embed an existing document with one or more models.
+
+    How a document gains a model it was not uploaded with, and how one emptied
+    by DELETE gets its vectors back. Chunks a model already holds are skipped,
+    so repeating this costs nothing.
+    """
+    with connection() as conn:
+        models = _models_for(conn, body.models)
+        try:
+            return embed_existing(conn, CURRENT_USER_ID, document_id, models)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+
 @app.delete("/documents/{document_id}")
 def delete_document_endpoint(document_id: uuid.UUID):
     """Delete a document, its chunks, its vectors, and its uploaded PDF.
@@ -373,9 +488,11 @@ def delete_document_embeddings(document_id: uuid.UUID, model: str | None = None)
     """Delete a document's vectors, keeping the document and its chunks.
 
     `model` names one vector table; omitted, every model's vectors go. The
-    chunks survive either way, so the text does not need re-extracting -- but
-    nothing over HTTP re-embeds them yet, so the document stays searchable by
-    whichever models it has left, and by none if this removed them all.
+    chunks survive either way, so POST on this path can embed them again
+    without re-extracting the PDF.
+
+    To stop a model searching a document without losing the work, PATCH its
+    `enabled` flag instead.
     """
     with connection() as conn:
         try:

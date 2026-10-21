@@ -22,9 +22,12 @@ from db.pool import SQLALCHEMY_URL
 from db.registry import EmbeddingModel
 
 # Columns every vector table carries as real columns rather than JSON. A search
-# filters on columns of its own table, so user_id has to live here -- HNSW
-# returns its top-k before a join to `documents` could scope the results.
-METADATA_COLUMNS = ["chunk_id", "user_id"]
+# filters on columns of its own table -- HNSW returns its top-k before a join
+# could scope the results -- so both the owner and the document have to live
+# here: user_id to keep one user's vectors out of another's results, and
+# document_id to restrict a search to the documents `document_embeddings` says
+# are searchable.
+METADATA_COLUMNS = ["chunk_id", "user_id", "document_id"]
 
 DISTANCE_STRATEGIES = {
     "cosine": DistanceStrategy.COSINE_DISTANCE,

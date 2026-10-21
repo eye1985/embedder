@@ -33,6 +33,18 @@
           </div>
         </fieldset>
 
+        <!-- Only shown once more than one model is checked: with one there is
+             nothing to choose. -->
+        <fieldset id="search-choice" class="models" hidden>
+          <legend>Search this document with</legend>
+          <div id="search-models" class="radios"></div>
+          <p class="note">
+            Every model embeds the same chunks, so this picks which one ranks
+            results for this document &mdash; not what can be found. You can
+            change it later from Documents.
+          </p>
+        </fieldset>
+
         <button id="submit" type="submit" disabled>Upload and embed</button>
 
         <p class="note">

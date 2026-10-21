@@ -14,18 +14,88 @@ function formatDate(iso) {
   return Number.isNaN(date.valueOf()) ? iso : date.toLocaleString();
 }
 
-// `embedded` is keyed by vector table name, one entry per registered model.
-// Models with no vectors are still shown, dimmed -- "this model has not
-// embedded this document" is the thing a reader is usually checking for.
-function modelChips(embedded) {
+function showError(message) {
+  list.prepend(el("p", "error-box", message));
+}
+
+// Every switch on this page writes through the same path: on failure the
+// caller puts its control back where it was, so what is on screen never
+// claims a state the server did not accept.
+async function send(url, method, body, onError = showError) {
+  try {
+    const response = await fetch(url, {
+      method,
+      // A PUT that says everything in its path carries no body, and sending
+      // a JSON content-type with none makes FastAPI reject it as malformed.
+      ...(body === undefined
+        ? {}
+        : {
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw new Error(
+        (payload && payload.detail) || `Request failed (${response.status})`,
+      );
+    }
+    return true;
+  } catch (error) {
+    onError(error.message || "Could not save.");
+    return false;
+  }
+}
+
+// One radio per model holding vectors for this document: which one it is
+// retrieved through. Models that embedded nothing are left out -- there is
+// nothing to choose there, and the chunk counts are already in `embedded`.
+//
+// A document with a single model still shows it: seeing what will answer for
+// it matters more than hiding a control with one option. That radio is only
+// locked once it is the one chosen -- a document left with no model after its
+// vectors were deleted has to be selectable, or it could never be searched
+// again.
+function modelChoice(doc) {
   const row = el("div", "chips");
-  for (const [table, count] of Object.entries(embedded)) {
-    const chip = el("span", count ? "chip" : "chip zero");
-    chip.append(el("span", "chip-name", table));
-    chip.append(el("span", "chip-count", count.toLocaleString()));
-    row.append(chip);
+  const tables = Object.entries(doc.embedded).filter(([, count]) => count);
+
+  if (!tables.length) {
+    row.append(el("span", "chip zero", "no embeddings — not searchable"));
+    return row;
+  }
+
+  for (const [table, count] of tables) {
+    const chosen = table === doc.search_model;
+    const option = el("label", chosen ? "chip active" : "chip");
+
+    const button = document.createElement("input");
+    button.type = "radio";
+    button.name = `search-model-${doc.document_id}`;
+    button.value = table;
+    button.checked = chosen;
+    button.disabled = tables.length === 1 && chosen;
+    button.addEventListener("change", () => choose(doc, table, row));
+    option.append(button);
+
+    option.append(el("span", "chip-name", table));
+    option.append(el("span", "chip-count", count.toLocaleString()));
+    row.append(option);
   }
   return row;
+}
+
+async function choose(doc, table, row) {
+  for (const button of row.querySelectorAll("input")) button.disabled = true;
+
+  const ok = await send(
+    `/documents/${doc.document_id}/search-model/${table}`,
+    "PUT",
+  );
+  // Reloaded either way: on success to move the mark, on failure to put the
+  // radios back on whatever the server still has.
+  await load();
+  return ok;
 }
 
 async function removeDocument(doc, button) {
@@ -57,7 +127,7 @@ async function removeDocument(doc, button) {
   } catch (error) {
     button.disabled = false;
     button.textContent = "Delete";
-    list.prepend(el("p", "error-box", error.message || "Delete failed."));
+    showError(error.message || "Delete failed.");
   }
 }
 
@@ -68,6 +138,28 @@ function card(doc) {
   head.append(el("h2", "card-title", doc.title || "Untitled"));
 
   const actions = el("div", "card-buttons");
+
+  // The master switch. Independent of the per-model ones below: both have to
+  // be on for a chunk to be retrievable, and turning this off leaves the
+  // per-model state alone so turning it back on restores it.
+  const search = el("label", doc.searchable ? "switch" : "switch off");
+  const searchBox = document.createElement("input");
+  searchBox.type = "checkbox";
+  searchBox.checked = doc.searchable;
+  searchBox.addEventListener("change", async () => {
+    searchBox.disabled = true;
+    const ok = await send(`/documents/${doc.document_id}`, "PATCH", {
+      searchable: searchBox.checked,
+    });
+    if (!ok) searchBox.checked = !searchBox.checked;
+    search.classList.toggle("off", !searchBox.checked);
+    item.classList.toggle("muted-card", !searchBox.checked);
+    searchBox.disabled = false;
+  });
+  search.append(searchBox);
+  search.append(el("span", null, "Searchable"));
+  actions.append(search);
+
   const link = el("a", "button small", "Download JSON");
   link.href = `/documents/${doc.document_id}/embeddings`;
   actions.append(link);
@@ -88,7 +180,8 @@ function card(doc) {
   meta.append(el("span", null, formatDate(doc.created_at)));
   item.append(meta);
 
-  item.append(modelChips(doc.embedded));
+  item.append(modelChoice(doc));
+  if (!doc.searchable) item.classList.add("muted-card");
   return item;
 }
 

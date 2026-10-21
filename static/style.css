@@ -462,3 +462,100 @@ a.button {
     opacity: 0.25;
   }
 }
+
+/* --- Search toggles --------------------------------------------------- */
+
+.radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  cursor: pointer;
+}
+
+.radio input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.radio:has(input:checked) {
+  border-color: var(--accent);
+}
+
+.radio input:disabled {
+  cursor: default;
+}
+
+.radio-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.radio-name {
+  font-size: 13px;
+}
+
+.radio-meta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Chips carry the per-document radio: which model answers for it. */
+.chip input {
+  margin: 0;
+  cursor: pointer;
+}
+
+.chip input:disabled {
+  cursor: default;
+}
+
+.chip:has(input) {
+  cursor: pointer;
+}
+
+/* The model this document is retrieved through. */
+.chip.active {
+  border-color: var(--accent);
+}
+
+.chip.active .chip-name {
+  font-weight: 600;
+}
+
+/* The document-level master switch, in the card's action row. */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.switch input {
+  margin: 0;
+  cursor: pointer;
+}
+
+/* Out of search keeps its vectors -- dimmed, not hidden. */
+.switch.off {
+  opacity: 0.55;
+}
+
+.card.muted-card {
+  opacity: 0.6;
+}

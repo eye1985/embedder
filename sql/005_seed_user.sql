@@ -4,11 +4,10 @@
 --
 -- Drop this migration before deploying anywhere real.
 --
--- The default model is required -- `default_embedding_model_id` is not null,
--- and registry.default_model_for_user() raises rather than guessing one. Every
--- insert into `users` has to name the model explicitly, as this one does.
+-- `upload_model_id` is required and never guessed, so every insert into
+-- `users` has to name it.
 
-insert into users (email, default_embedding_model_id)
+insert into users (email, upload_model_id)
 select 'testuser@mail.com', id
 from embedding_models
 where table_name = 'emb_openai_te3_small'

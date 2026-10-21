@@ -85,14 +85,21 @@ def indexable(dimensions: int) -> bool:
 # Vector tables have no relationship to one another. Dropping one leaves every
 # other table untouched.
 #
-# Only two foreign keys are carried:
-#   chunk_id -- the real relationship. Deleting a document cascades to its
-#               chunks, which cascades to the vectors here. UNIQUE because a
-#               chunk is embedded at most once per model.
-#   user_id  -- denormalized from documents.user_id. Required, not convenience:
-#               a similarity search filters on columns of THIS table, and HNSW
-#               returns its top-k before a join to `documents` could scope the
-#               results to one user.
+# Three foreign keys are carried:
+#   chunk_id    -- the real relationship. Deleting a document cascades to its
+#                  chunks, which cascades to the vectors here. UNIQUE because a
+#                  chunk is embedded at most once per model.
+#   user_id     -- denormalized from documents.user_id. Required, not
+#                  convenience: a similarity search filters on columns of THIS
+#                  table, and HNSW returns its top-k before a join to
+#                  `documents` could scope the results to one user.
+#   document_id -- denormalized from document_chunks.document_id, for the same
+#                  reason: it is what lets a search be restricted to the
+#                  documents `document_embeddings` says are searchable.
+#
+# Both denormalized columns are identity, never state. They are written once
+# and never updated, so there is nothing to drift. The enable/disable flags
+# stay in `document_embeddings`, where they exist exactly once.
 #
 # Note the FK on user_id guarantees only that the user exists, NOT that it
 # matches the chunk's owner. Keeping the two in agreement is the writer's job.
@@ -105,11 +112,13 @@ TABLE_DDL = sql.SQL("""
                      references document_chunks(id) on delete cascade,
         user_id      int not null
                      references users(id) on delete cascade,
+        document_id  uuid not null
+                     references documents(id) on delete cascade,
         langchain_metadata jsonb
     )
 """)
 
-USER_INDEX_DDL = sql.SQL("create index on {table} ({column})")
+COLUMN_INDEX_DDL = sql.SQL("create index on {table} ({column})")
 
 VECTOR_INDEX_DDL = sql.SQL("create index on {table} using hnsw ({column} {ops})")
 
@@ -161,7 +170,10 @@ def create_vector_table(conn: psycopg.Connection, model: EmbeddingModel) -> bool
             dimensions=sql.Literal(model.dimensions),
         )
     )
-    conn.execute(USER_INDEX_DDL.format(table=table, column=sql.Identifier("user_id")))
+    conn.execute(COLUMN_INDEX_DDL.format(table=table, column=sql.Identifier("user_id")))
+    conn.execute(
+        COLUMN_INDEX_DDL.format(table=table, column=sql.Identifier("document_id"))
+    )
 
     if not indexable(model.dimensions):
         return False

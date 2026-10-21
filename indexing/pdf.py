@@ -12,6 +12,7 @@ from pathlib import Path
 import psycopg
 
 from db.documents import add_document, count_chunks, find_document
+from db.embeddings import set_document_model
 from db.registry import EmbeddingModel
 from indexing.chunk import split_documents
 from indexing.embed import embed_document
@@ -31,8 +32,13 @@ def import_pdf(
     user_id: int,
     pdf: Path,
     models: list[EmbeddingModel],
+    search_model: EmbeddingModel | None = None,
 ) -> dict:
     """Store a PDF's chunks if new, then embed them with each model.
+
+    `search_model` is the one the document is retrieved through; it must be
+    one of `models`, and defaults to the first. The others keep their vectors
+    and are simply not searched.
 
     `pdf` must be an absolute path inside the project. `source_uri` is derived
     from it relative to `PROJECT_ROOT`, and that string is the key uploads
@@ -52,12 +58,16 @@ def import_pdf(
 
     embedded = {m.table_name: embed_document(conn, document_id, m) for m in models}
 
+    searched = search_model or models[0]
+    set_document_model(conn, user_id, document_id, searched.id)
+
     return {
         "document_id": str(document_id),
         "source_uri": source_uri,
         "reused_existing_document": reused,
         "chunks": count_chunks(conn, document_id),
         "embedded": embedded,
+        "search_model": searched.table_name,
     }
 
 

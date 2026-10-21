@@ -65,19 +65,22 @@ def get_model(
     return _row(row)
 
 
-def default_model_for_user(conn: psycopg.Connection, user_id: int) -> EmbeddingModel:
-    """The user's chosen model. Every user row has to name one."""
+def _user_model(conn: psycopg.Connection, user_id: int, column: str) -> EmbeddingModel:
+    """The model named by one of the user's model columns.
+
+    `column` is a literal from this module, never from a request.
+    """
     row = conn.execute(
-        "select default_embedding_model_id from users where id = %s", (user_id,)
+        f"select {column} from users where id = %s", (user_id,)
     ).fetchone()
     if row is None:
         raise LookupError(f"No user with id {user_id}.")
-    if row[0] is None:
-        raise LookupError(
-            f"User {user_id} has no default_embedding_model_id. The column is "
-            f"not null, so this means the row predates that constraint."
-        )
     return get_model(conn, model_id=row[0])
+
+
+def upload_model_for_user(conn: psycopg.Connection, user_id: int) -> EmbeddingModel:
+    """The model the upload form pre-selects, and what /upload falls back to."""
+    return _user_model(conn, user_id, "upload_model_id")
 
 
 def models_with_tables(conn: psycopg.Connection) -> list[EmbeddingModel]:

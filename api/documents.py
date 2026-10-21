@@ -21,21 +21,30 @@ from db.documents import (
     get_document,
 )
 from db.documents import delete_document as delete_document_rows
+from db.embeddings import models_by_document, unmark_embedded
 from db.registry import list_models, models_with_tables
 from export import build_archive, export_document
+from indexing.embed import embed_document
 from paths import PROJECT_ROOT, UPLOAD_DIR
 
 
 def list_documents(conn: psycopg.Connection, user_id: int) -> list[dict]:
-    """The user's documents, newest first, with chunk and embedding counts.
+    """The user's documents, newest first, with chunk counts and search state.
 
     Every registered model appears in `embedded`, including ones with no table
     yet -- a zero there means "not embedded by this model", which is the
     question the caller is asking.
+
+    `search_model` names the one model the document is retrieved through, or
+    is null if it has none -- which is also what a document nothing has
+    embedded looks like. `searchable` is the document-level switch that
+    overrides it either way.
     """
     models = list_models(conn, active_only=False)
     readable = [m.table_name for m in models_with_tables(conn)]
     counts = embedded_counts(conn, user_id, readable)
+    flags = models_by_document(conn, user_id)
+    table_names = {m.id: m.table_name for m in models}
 
     return [
         {
@@ -43,15 +52,29 @@ def list_documents(conn: psycopg.Connection, user_id: int) -> list[dict]:
             "title": title,
             "source_uri": source_uri,
             "created_at": created_at.isoformat(),
+            "searchable": searchable,
             "chunks": chunks,
             "embedded": {
                 m.table_name: counts.get(m.table_name, {}).get(document_id, 0)
                 for m in models
             },
+            "search_model": next(
+                (
+                    table_names[model_id]
+                    for model_id, searched in flags.get(document_id, {}).items()
+                    if searched and model_id in table_names
+                ),
+                None,
+            ),
         }
-        for document_id, title, source_uri, created_at, chunks in document_rows(
-            conn, user_id
-        )
+        for (
+            document_id,
+            title,
+            source_uri,
+            created_at,
+            searchable,
+            chunks,
+        ) in document_rows(conn, user_id)
     ]
 
 
@@ -89,10 +112,10 @@ def delete_embeddings(
     """Delete a document's vectors, keeping the document and its chunks.
 
     The chunks are what extraction produced, and they are model-independent, so
-    the text survives and `embed_document` could fill the vectors back in from
-    it. Note that no HTTP route does that today: /upload refuses a filename
-    that already has a document, so a document emptied this way can only be
-    re-embedded from Python until a re-embed route exists.
+    the text survives and `embed_existing` can fill the vectors back in from it.
+
+    Prefer the `enabled` toggle for taking a model out of search: that is a
+    boolean, while this spends the embedding API again to undo.
     """
     _, _, title, source_uri, _ = get_document(conn, user_id, document_id)
 
@@ -102,9 +125,12 @@ def delete_embeddings(
         if not models:
             raise LookupError(f"No vector table named {table_name!r}.")
 
-    removed = {
-        m.table_name: delete_vectors(conn, document_id, m.table_name) for m in models
-    }
+    removed = {}
+    for model in models:
+        removed[model.table_name] = delete_vectors(conn, document_id, model.table_name)
+        # The pairing claims vectors that are gone, so it goes with them --
+        # back to "never embedded", which is the state that is now true.
+        unmark_embedded(conn, document_id, model.id)
 
     return {
         "document_id": str(document_id),
@@ -142,9 +168,37 @@ def delete_document(
     }
 
 
+def embed_existing(
+    conn: psycopg.Connection,
+    user_id: int,
+    document_id: uuid.UUID,
+    models: list,
+) -> dict:
+    """Embed a stored document's chunks with each of `models`.
+
+    The counterpart to delete_embeddings, and what makes adding a model to an
+    existing document possible at all -- /upload refuses a filename that
+    already has a document, so it cannot be the route for this.
+
+    Chunks a model already holds are skipped, so this is safe to repeat.
+    """
+    _, _, title, source_uri, _ = get_document(conn, user_id, document_id)
+
+    embedded = {m.table_name: embed_document(conn, document_id, m) for m in models}
+
+    return {
+        "document_id": str(document_id),
+        "title": title,
+        "source_uri": source_uri,
+        "embedded": embedded,
+        "chunks": count_chunks(conn, document_id),
+    }
+
+
 __all__ = [
     "delete_document",
     "delete_embeddings",
+    "embed_existing",
     "export_archive",
     "export_document",
     "list_documents",

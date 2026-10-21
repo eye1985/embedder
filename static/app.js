@@ -3,16 +3,21 @@ const input = document.getElementById("input");
 const sendButton = document.getElementById("send");
 const messages = document.getElementById("messages");
 
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
 function addMessage(role, text = "") {
   const empty = messages.querySelector(".empty");
   if (empty) empty.remove();
 
-  const el = document.createElement("div");
-  el.className = `msg ${role}`;
-  el.textContent = text;
-  messages.appendChild(el);
+  const node = el("div", `msg ${role}`, text);
+  messages.appendChild(node);
   scrollToBottom();
-  return el;
+  return node;
 }
 
 function scrollToBottom() {

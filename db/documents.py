@@ -117,13 +117,16 @@ def get_document(
 def document_rows(conn: psycopg.Connection, user_id: int) -> list[tuple]:
     """The user's documents with chunk counts, newest first.
 
+    Returns (id, title, source_uri, created_at, searchable, chunks).
+
     `id` breaks ties on `created_at` so the order is stable: two documents
     imported in the same transaction share a timestamp, and an unstable sort
     would shuffle them between loads.
     """
     return conn.execute(
         """
-        select d.id::text, d.title, d.source_uri, d.created_at, count(c.id)
+        select d.id::text, d.title, d.source_uri, d.created_at, d.searchable,
+               count(c.id)
         from documents d
         left join document_chunks c on c.document_id = d.id
         where d.user_id = %s
@@ -157,8 +160,7 @@ def vector_rows(
         f"""
         select v.chunk_id::text, v.embedding::text
         from "{table_name}" v
-        join document_chunks c on c.id = v.chunk_id
-        where c.document_id = %s
+        where v.document_id = %s
         """,
         (document_id,),
     ).fetchall()
@@ -178,12 +180,10 @@ def embedded_counts(
     for table_name in table_names:
         rows = conn.execute(
             f"""
-            select c.document_id::text, count(*)
+            select v.document_id::text, count(*)
             from "{table_name}" v
-            join document_chunks c on c.id = v.chunk_id
-            join documents d on d.id = c.document_id
-            where d.user_id = %s
-            group by c.document_id
+            where v.user_id = %s
+            group by v.document_id
             """,
             (user_id,),
         ).fetchall()
@@ -199,14 +199,26 @@ def delete_vectors(
     The chunks survive, so the text does not need re-extracting.
     """
     cursor = conn.execute(
-        f"""
-        delete from "{table_name}" v
-        using document_chunks c
-        where v.chunk_id = c.id and c.document_id = %s
-        """,
-        (document_id,),
+        f'delete from "{table_name}" where document_id = %s', (document_id,)
     )
     return cursor.rowcount
+
+
+def set_searchable(
+    conn: psycopg.Connection, user_id: int, document_id: uuid.UUID, searchable: bool
+) -> None:
+    """The document-level master switch, across every model.
+
+    Per-model state in `document_embeddings` is untouched, so switching a
+    document back on restores exactly the models it had. Raises LookupError if
+    the document is not the user's.
+    """
+    updated = conn.execute(
+        "update documents set searchable = %s where id = %s and user_id = %s",
+        (searchable, document_id, user_id),
+    ).rowcount
+    if not updated:
+        raise LookupError(f"No document {document_id} for this user.")
 
 
 def delete_document(
@@ -235,9 +247,7 @@ def has_any_vector(
     """
     for table_name in table_names:
         found = conn.execute(
-            f'select 1 from "{table_name}" v '
-            "join document_chunks c on c.id = v.chunk_id "
-            "where c.document_id = %s limit 1",
+            f'select 1 from "{table_name}" where document_id = %s limit 1',
             (document_id,),
         ).fetchone()
         if found is not None:

@@ -6,6 +6,10 @@ create table documents (
     user_id    int  not null references users(id) on delete cascade,
     title      text,
     source_uri text,
+    -- Master switch: false takes the document out of search for every model.
+    -- Per-model state lives in document_embeddings and is left untouched, so
+    -- switching a document back on restores exactly the models it had.
+    searchable boolean not null default true,
     created_at timestamptz not null default now()
 );
 
