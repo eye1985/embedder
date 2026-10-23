@@ -1,8 +1,10 @@
+import json
 import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
 from operator import itemgetter
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, FastAPI, Form, HTTPException, Request, UploadFile
@@ -10,7 +12,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from psycopg_pool import PoolTimeout
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 from starlette.responses import (
+    FileResponse,
     JSONResponse,
     Response,
     StreamingResponse,
@@ -45,7 +49,7 @@ from api.uploads import (
     upload_source_uri,
     upload_status,
 )
-from db.documents import find_document, set_searchable
+from db.documents import cited_chunks, find_document, get_document, set_searchable
 from db.embeddings import document_counts, search_groups, set_document_model
 from db.pool import close_pool, connection, get_pool, table_exists
 from db.registry import get_model, list_models, upload_model_for_user
@@ -53,7 +57,7 @@ from db.vectors import close_engines
 from export import document_filename
 from indexing.pdf import ExtractionFailed, import_pdf
 from llm.chat import build_chat
-from paths import PROJECT_ROOT
+from paths import PROJECT_ROOT, UPLOAD_DIR
 
 logger = logging.getLogger("api")
 
@@ -211,6 +215,69 @@ class Chat(BaseModel):
     prompt: str
 
 
+def _sse(event: str, data: dict) -> str:
+    """One server-sent event.
+
+    The payload is JSON rather than raw text because a newline inside `data:`
+    ends the field and one leading space after the colon is framing -- model
+    output has both.
+    """
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+
+def _sources(retrieved: list) -> list[dict]:
+    """The documents behind an answer, one entry each, best-ranked first.
+
+    These are the chunks retrieval returned, which is not the same as the ones
+    the model leaned on -- it says what was searched, not what was quoted.
+    Pages are shifted into the PDF's own numbering, which starts at 1.
+
+    `filename` is what the download actually arrives as, which is why it is
+    sent alongside the title -- the two differ, the title being the stem.
+    """
+    ranked = [str(document.metadata.get("chunk_id")) for document in retrieved]
+    if not ranked:
+        return []
+
+    with connection() as conn:
+        rows = cited_chunks(conn, CURRENT_USER_ID, ranked)
+
+    rank = {chunk_id: index for index, chunk_id in enumerate(ranked)}
+    last = len(ranked)
+    found: dict[str, dict] = {}
+
+    for chunk_id, document_id, title, source_uri, page in rows:
+        # Resolved against the disk, not just the column: a file deleted from
+        # under its row would otherwise be offered as a link that 404s.
+        stored = _source_path(source_uri)
+        source = found.setdefault(
+            document_id,
+            {
+                "title": title,
+                "filename": stored.name if stored else None,
+                "pages": set(),
+                "has_source": stored is not None,
+                "rank": last,
+            },
+        )
+        source["rank"] = min(source["rank"], rank.get(chunk_id, last))
+        if page is not None:
+            source["pages"].add(page + 1)
+
+    return [
+        {
+            "document_id": document_id,
+            "title": source["title"],
+            "filename": source["filename"],
+            "pages": sorted(source["pages"]),
+            "has_source": source["has_source"],
+        }
+        for document_id, source in sorted(
+            found.items(), key=lambda item: item[1]["rank"]
+        )
+    ]
+
+
 # Sync `def`: reading which model searches which document is a blocking
 # query, and the chain is assembled before a single token is streamed.
 # FastAPI runs this in a worker thread and then streams on the event loop.
@@ -221,6 +288,9 @@ def chat(prompt: Chat):
     Each document is retrieved through the one model it was given, so this
     reads the grouping per request -- changing a document's model has to take
     effect on the next question, not the next restart.
+
+    The body is an event stream: a `token` per piece of the answer, then
+    `sources` naming the documents it was searched against, then `done`.
     """
     with connection() as conn:
         groups = {
@@ -228,23 +298,39 @@ def chat(prompt: Chat):
             for model_id, document_ids in search_groups(conn, CURRENT_USER_ID).items()
         }
 
-    run, config = itemgetter("runnable_with_history", "config")(
+    run, config, retrieved = itemgetter("runnable_with_history", "config", "retrieved")(
         build_chat(CURRENT_USER_ID, groups)
     )
 
     async def stream():
         # A streaming response commits to 200 before the first token, so a
-        # failure here cannot change the status. The error is written into the
-        # body instead -- the alternative is a silent truncation that reads
+        # failure here cannot change the status. It goes out as an `error`
+        # event instead -- the alternative is a silent truncation that reads
         # like a short answer.
         try:
             async for chunk in run.astream({"question": prompt.prompt}, config=config):
-                yield chunk
+                if chunk:
+                    yield _sse("token", {"t": chunk})
+            # Off the loop: resolving chunks to documents is a blocking query,
+            # and this generator runs on the event loop.
+            sources = await run_in_threadpool(_sources, retrieved)
+            yield _sse("sources", {"sources": sources})
         except Exception:
             logger.exception("chat stream failed")
-            yield "\n\n[error] The answer could not be completed. See server logs."
+            yield _sse(
+                "error",
+                {"detail": "The answer could not be completed. See server logs."},
+            )
+        # Deliberately not in a `finally`: a client that disconnects throws
+        # GeneratorExit in here, and yielding while that unwinds is its own
+        # error.
+        yield _sse("done", {})
 
-    return StreamingResponse(stream(), media_type="text/plain; charset=utf-8")
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"cache-control": "no-cache"},
+    )
 
 
 def _models_for(conn, names: list[str] | None):
@@ -450,6 +536,25 @@ def _attachment(filename: str) -> dict[str, str]:
     return {"Content-Disposition": f'attachment; filename="{filename}"'}
 
 
+# Where a document's file may be: uploads/ for anything imported through the
+# web, sample/ for the PDFs that ship with the repo.
+SOURCE_DIRS = (UPLOAD_DIR, PROJECT_ROOT / "sample")
+
+
+def _source_path(source_uri: str | None) -> Path | None:
+    """The file behind a document, if it is still there.
+
+    Checked against the directories the app imports from, so a `source_uri`
+    edited to point elsewhere on disk resolves to nothing.
+    """
+    if not source_uri:
+        return None
+    path = (PROJECT_ROOT / source_uri).resolve()
+    if not any(path.is_relative_to(directory) for directory in SOURCE_DIRS):
+        return None
+    return path if path.is_file() else None
+
+
 # Sync `def` for the same reason as /upload: psycopg blocks, so FastAPI runs
 # these in a worker thread rather than stalling the event loop while a large
 # document is serialized.
@@ -490,6 +595,29 @@ def download_document_embeddings(document_id: uuid.UUID):
     # inside a full export arrive under the same name.
     filename = document_filename(str(document_id), title).split("/")[-1]
     return JSONResponse(payload, headers=_attachment(filename))
+
+
+@api.get("/documents/{document_id}/source")
+def download_document_source(document_id: uuid.UUID):
+    """The file a document was imported from, as a download.
+
+    What a chat answer's sources link to. Scoped like every other document
+    endpoint, so someone else's document is reported missing rather than
+    refused.
+    """
+    with connection() as conn:
+        try:
+            _, _, _, source_uri, _ = get_document(conn, CURRENT_USER_ID, document_id)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    path = _source_path(source_uri)
+    if path is None:
+        raise HTTPException(404, f"No stored file for document {document_id}.")
+
+    return FileResponse(
+        path, media_type="application/pdf", headers=_attachment(path.name)
+    )
 
 
 @api.get("/embeddings")

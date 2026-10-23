@@ -146,6 +146,32 @@ def chunk_rows(conn: psycopg.Connection, document_id: uuid.UUID) -> list[tuple]:
     ).fetchall()
 
 
+def cited_chunks(
+    conn: psycopg.Connection, user_id: int, chunk_ids: list[str]
+) -> list[tuple]:
+    """Retrieved chunks resolved to their documents.
+
+    Returns (chunk_id, document_id, title, source_uri, page). `page` is left
+    as the extractor stored it, which is 0-indexed.
+
+    Scoped to the user, so a chunk_id belonging to someone else returns no row
+    rather than its document's title. Only the page is read out of `metadata`:
+    the rest of it holds absolute local paths.
+    """
+    if not chunk_ids:
+        return []
+    return conn.execute(
+        """
+        select c.id::text, d.id::text, d.title, d.source_uri,
+               (c.metadata->>'page')::int
+        from document_chunks c
+        join documents d on d.id = c.document_id
+        where c.id = any(%s::uuid[]) and d.user_id = %s
+        """,
+        (chunk_ids, user_id),
+    ).fetchall()
+
+
 def vector_rows(
     conn: psycopg.Connection, document_id: uuid.UUID, table_name: str
 ) -> list[tuple]:

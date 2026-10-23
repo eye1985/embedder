@@ -20,6 +20,9 @@ export interface paths {
          *     Each document is retrieved through the one model it was given, so this
          *     reads the grouping per request -- changing a document's model has to take
          *     effect on the next question, not the next restart.
+         *
+         *     The body is an event stream: a `token` per piece of the answer, then
+         *     `sources` naming the documents it was searched against, then `done`.
          */
         post: operations["chat_api_chat_post"];
         delete?: never;
@@ -173,6 +176,30 @@ export interface paths {
          *     `enabled` flag instead.
          */
         delete: operations["delete_document_embeddings_api_documents__document_id__embeddings_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/documents/{document_id}/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download Document Source
+         * @description The file a document was imported from, as a download.
+         *
+         *     What a chat answer's sources link to. Scoped like every other document
+         *     endpoint, so someone else's document is reported missing rather than
+         *     refused.
+         */
+        get: operations["download_document_source_api_documents__document_id__source_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -681,6 +708,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeleteEmbeddingsResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    download_document_source_api_documents__document_id__source_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */

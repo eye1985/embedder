@@ -150,6 +150,22 @@ def _context(user_id: int, groups: dict[EmbeddingModel, list[str]]) -> Runnable:
     return RunnableLambda(fan_out)
 
 
+def _tap(sink: list[Document]) -> Runnable:
+    """Records what retrieval returned on the way past.
+
+    The chain's output is the answer text, so the chunks behind it would
+    otherwise be unreachable -- and naming sources needs them. One sink per
+    chain, which is one per request.
+    """
+
+    def record(documents: list[Document]) -> list[Document]:
+        sink.clear()
+        sink.extend(documents)
+        return documents
+
+    return RunnableLambda(record)
+
+
 def build_chat(user_id: int, groups: dict[EmbeddingModel, list[str]]) -> dict:
     """The chat chain for one request.
 
@@ -161,9 +177,15 @@ def build_chat(user_id: int, groups: dict[EmbeddingModel, list[str]]) -> dict:
 
     History is keyed by user, so changing a document's model continues the
     conversation rather than restarting it.
+
+    `retrieved` is empty until the chain runs, and then holds the chunks the
+    answer was built from. It stays out of the chain's output so history keeps
+    storing the answer alone.
     """
+    retrieved: list[Document] = []
+
     chain = (
-        RunnablePassthrough.assign(context=_context(user_id, groups))
+        RunnablePassthrough.assign(context=_context(user_id, groups) | _tap(retrieved))
         | PROMPT
         | _chat_llm()
         | StrOutputParser()
@@ -179,4 +201,5 @@ def build_chat(user_id: int, groups: dict[EmbeddingModel, list[str]]) -> dict:
     return {
         "runnable_with_history": conversational_chain,
         "config": {"configurable": {"session_id": f"user-{user_id}"}},
+        "retrieved": retrieved,
     }

@@ -20,6 +20,18 @@ export const readUploadStatus = () =>
 
 export const askChat = (prompt: string) => postStream("/api/chat", { prompt });
 
+// One document a chat answer was searched against. Not generated from the
+// schema: it arrives inside the event stream, which FastAPI does not describe.
+export interface Source {
+  document_id: string;
+  title: string | null;
+  /** What the download arrives as. Null once the stored file is gone. */
+  filename: string | null;
+  /** In the PDF's own numbering, so the first page is 1. */
+  pages: number[];
+  has_source: boolean;
+}
+
 export const uploadPdf = (body: FormData) =>
   postForm<ImportResult>("/api/upload", body);
 
@@ -42,4 +54,5 @@ export const deleteDocument = (id: string) =>
 // download-all link is declared in documents.html, which owns that markup.
 export const documentExportHref = (id: string) =>
   `/api/documents/${id}/embeddings`;
+export const documentSourceHref = (id: string) => `/api/documents/${id}/source`;
 export const documentsPageHref = "/documents";

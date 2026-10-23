@@ -81,3 +81,61 @@
     visibility: hidden;
   }
 }
+
+/* A wrapping row rather than a stack. Ten chunks usually come from two or
+   three documents, and a full row each costs more height than the answer it
+   belongs to. The label sits on the row, so it spends no line of its own. */
+.turn-sources {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.turn-sources-label {
+  font-size: var(--fs-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+/* The chip from the documents page, in the smaller size this row wants --
+   same job, so the same shape. */
+.source {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sp-2);
+  max-width: 34ch;
+  padding: 3px 8px;
+  font-size: var(--fs-tiny);
+  color: var(--fg-2);
+  background: var(--sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  text-decoration: none;
+  transition: background 120ms, border-color 120ms, color 120ms;
+}
+
+a.source:hover {
+  color: var(--fg);
+  background: var(--highlight-soft);
+  border-color: var(--highlight);
+}
+
+/* The name is clipped to length in the script; this is the backstop for a
+   column too narrow for even that. `min-width` is what lets it clip inside
+   the flex row at all. */
+.source-name {
+  min-width: 0;
+  font-family: var(--font-mono);
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Nothing to download, so it reads as a name rather than a dead link. */
+.source.missing {
+  opacity: 0.55;
+}
