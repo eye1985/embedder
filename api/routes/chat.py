@@ -2,9 +2,9 @@
 
 import json
 import logging
-from operator import itemgetter
 
 from fastapi import APIRouter
+from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
@@ -15,7 +15,7 @@ from db.pool import connection
 from db.tables.documents import cited_chunks
 from db.tables.embeddings import search_groups
 from db.tables.registry import get_model
-from llm.chat import build_chat
+from llm.chat import build_graph
 
 logger = logging.getLogger("api")
 
@@ -90,7 +90,7 @@ def sources(retrieved: list) -> list[dict]:
 
 
 # Sync `def`: reading which model searches which document is a blocking
-# query, and the chain is assembled before a single token is streamed.
+# query, and the graph is assembled before a single token is streamed.
 # FastAPI runs this in a worker thread and then streams on the event loop.
 @router.post("/chat")
 def chat(prompt: Chat):
@@ -102,6 +102,8 @@ def chat(prompt: Chat):
 
     The body is an event stream: a `token` per piece of the answer, then
     `sources` naming the documents it was searched against, then `done`.
+    Not every question is searched -- the graph decides -- and one that was
+    not sends an empty `sources`.
     """
     with connection() as conn:
         groups = {
@@ -109,9 +111,8 @@ def chat(prompt: Chat):
             for model_id, document_ids in search_groups(conn, CURRENT_USER_ID).items()
         }
 
-    run, config, retrieved = itemgetter("runnable_with_history", "config", "retrieved")(
-        build_chat(CURRENT_USER_ID, groups)
-    )
+    graph = build_graph(CURRENT_USER_ID, groups)
+    config = {"configurable": {"thread_id": f"user-{CURRENT_USER_ID}"}}
 
     async def stream():
         # A streaming response commits to 200 before the first token, so a
@@ -119,12 +120,22 @@ def chat(prompt: Chat):
         # event instead -- the alternative is a silent truncation that reads
         # like a short answer.
         try:
-            async for chunk in run.astream({"question": prompt.prompt}, config=config):
-                if chunk:
-                    yield sse("token", {"t": chunk})
+            # `messages` mode emits every LLM call in the graph, and the router
+            # is one of them -- its decision is not part of the answer.
+            async for chunk, metadata in graph.astream(
+                {"messages": [HumanMessage(prompt.prompt)]},
+                config=config,
+                stream_mode="messages",
+            ):
+                if metadata["langgraph_node"] == "answer" and chunk.text:
+                    yield sse("token", {"t": chunk.text})
+
+            # The chunks the answer was built from live in the graph's state,
+            # which is only final once the stream is done.
+            state = await graph.aget_state(config)
             # Off the loop: resolving chunks to documents is a blocking query,
             # and this generator runs on the event loop.
-            resolved = await run_in_threadpool(sources, retrieved)
+            resolved = await run_in_threadpool(sources, state.values.get("context", []))
             yield sse("sources", {"sources": resolved})
         except Exception:
             logger.exception("chat stream failed")
