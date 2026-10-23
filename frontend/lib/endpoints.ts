@@ -49,9 +49,10 @@ export const setSearchModel = (id: string, table: string) =>
 export const deleteDocument = (id: string) =>
   send<Schemas["DeleteDocumentResult"]>(`/api/documents/${id}`, "DELETE");
 
-// Followed by the browser rather than fetched: this response sets
-// Content-Disposition, so it is an href and never parsed here. The
-// download-all link is declared in documents.html, which owns that markup.
+// Hrefs, not readers: these responses are files, never parsed here. On the
+// documents page they are saved through `download()` so a failure can be
+// reported in the page -- see components/download. The download-all link is
+// declared in documents.html, which owns that markup.
 export const documentExportHref = (id: string) =>
   `/api/documents/${id}/embeddings`;
 export const documentSourceHref = (id: string) => `/api/documents/${id}/source`;

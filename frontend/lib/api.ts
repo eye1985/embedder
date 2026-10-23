@@ -65,3 +65,36 @@ export async function postStream(
   }
   return response.body;
 }
+
+// How long a blob URL is kept alive after the click that saves it. The click
+// starts the save, it does not finish it, so revoking immediately can cancel
+// a download that has not begun reading yet.
+const REVOKE_AFTER_MS = 10_000;
+
+// Every download route sets `attachment; filename="..."`. Read back here
+// because a blob URL has no name of its own -- without this the file saves as
+// the URL's UUID.
+function attachmentName(response: Response): string {
+  const header = response.headers.get("Content-Disposition") ?? "";
+  return /filename="([^"]+)"/.exec(header)?.[1] ?? "download";
+}
+
+// A download, fetched rather than followed. A link straight to one of these
+// routes navigates away from the page when it fails and renders the error JSON
+// in its place; fetching keeps the page up and makes the reason reportable,
+// at the cost of holding the file in memory while it saves.
+export async function download(url: string): Promise<void> {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(await reason(response));
+
+  const href = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = href;
+  link.download = attachmentName(response);
+  // In the document for the click: a detached anchor's `download` is ignored
+  // by some browsers.
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(href), REVOKE_AFTER_MS);
+}

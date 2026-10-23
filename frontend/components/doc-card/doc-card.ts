@@ -1,8 +1,9 @@
 import { el, input } from "../../lib/dom";
 import { count, formatDate } from "../../lib/format";
-import { documentExportHref } from "../../lib/endpoints";
+import { documentExportHref, documentSourceHref } from "../../lib/endpoints";
 import type { DocumentOut } from "../../lib/endpoints";
 import { chip, chipNote, chipRow } from "../chips/chips";
+import { downloadLink } from "../download/download";
 import { toggleSwitch } from "../switch/switch";
 
 export interface DocActions {
@@ -11,6 +12,8 @@ export interface DocActions {
   /** Resolves false when the delete failed, the one case where this card is
    *  still on screen afterwards. */
   onDelete: () => Promise<boolean>;
+  /** A download that failed. The page owns where it is shown. */
+  onError: (message: string) => void;
 }
 
 // One radio per model holding vectors for this document: which one it is
@@ -92,9 +95,24 @@ export function docCard(doc: DocumentOut, actions: DocActions): HTMLElement {
   foot.append(modelChoice(doc, actions.onSearchModel));
 
   const docActions = el("div", "doc-actions");
-  const link = el("a", "button small", "Download JSON");
-  link.href = documentExportHref(doc.document_id);
-  docActions.append(link);
+
+  // Not gated on anything: /upload is the only thing that creates a document
+  // and it always stores the PDF, which is deleted with the row it belongs to,
+  // so a listed document has its file.
+  docActions.append(
+    downloadLink(
+      "Download PDF",
+      documentSourceHref(doc.document_id),
+      actions.onError,
+    ),
+  );
+  docActions.append(
+    downloadLink(
+      "Download JSON",
+      documentExportHref(doc.document_id),
+      actions.onError,
+    ),
+  );
 
   const remove = el("button", "button small danger", "Delete");
   remove.type = "button";

@@ -1,5 +1,6 @@
 import { el } from "../../lib/dom";
 import { documentSourceHref, type Source } from "../../lib/endpoints";
+import { bindDownload } from "../download/download";
 
 export type Role = "user" | "assistant" | "error";
 
@@ -39,7 +40,10 @@ function clip(name: string): string {
   return `${name.slice(0, 22)}…${name.slice(-9)}`;
 }
 
-function sourceList(items: Source[]): HTMLElement {
+function sourceList(
+  items: Source[],
+  onError: (message: string) => void,
+): HTMLElement {
   const node = el("div", "turn-sources");
   node.append(el("span", "turn-sources-label", "Sources searched"));
 
@@ -48,11 +52,19 @@ function sourceList(items: Source[]): HTMLElement {
 
     // A document whose file is gone is still worth naming -- it was searched.
     // It just has nothing to download.
-    const chip: HTMLElement = item.has_source
-      ? Object.assign(el("a", "source"), {
-          href: documentSourceHref(item.document_id),
-        })
-      : el("span", "source missing");
+    let chip: HTMLElement;
+    if (item.has_source) {
+      const link = Object.assign(el("a", "source"), {
+        href: documentSourceHref(item.document_id),
+      });
+      // `has_source` was true when the answer was generated, so the file can
+      // still be gone by the time this is clicked. Downloaded rather than
+      // followed so that lands in the transcript instead of replacing it.
+      bindDownload(link, onError);
+      chip = link;
+    } else {
+      chip = el("span", "source missing");
+    }
 
     // The name is clipped when long, so the whole of it goes here too.
     chip.title = [
@@ -76,21 +88,27 @@ export function transcript(node: HTMLElement): Transcript {
     node.scrollTop = node.scrollHeight;
   }
 
-  return {
-    add(role, label, text = "") {
-      node.querySelector(".empty")?.remove();
-      const { node: item, body } = turn(role, label, text);
-      node.append(item);
-      scrollToBottom();
-      return {
-        body,
-        showSources(sources) {
-          if (sources.length === 0) return;
-          item.append(sourceList(sources));
-        },
-        remove: () => item.remove(),
-      };
-    },
-    scrollToBottom,
-  };
+  // Named rather than written straight into the returned object: a failed
+  // source download reports itself as a turn, so this has to reach itself.
+  function add(role: Role, label: string, text = ""): Reply {
+    node.querySelector(".empty")?.remove();
+    const { node: item, body } = turn(role, label, text);
+    node.append(item);
+    scrollToBottom();
+    return {
+      body,
+      showSources(sources) {
+        if (sources.length === 0) return;
+        item.append(
+          sourceList(sources, (message) => {
+            add("error", "Error", message);
+            scrollToBottom();
+          }),
+        );
+      },
+      remove: () => item.remove(),
+    };
+  }
+
+  return { add, scrollToBottom };
 }

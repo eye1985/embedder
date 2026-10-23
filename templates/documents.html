@@ -3,8 +3,8 @@
 {% block content %}
 <section class="toolbar">
   <p id="summary" class="muted"></p>
-  {# A plain link, not a fetch: the browser saves the response itself,
-     because /api/embeddings sets Content-Disposition. #}
+  {# The href is what the script downloads through, and what "save link as"
+     and a page with no script still fall back to. #}
   <a id="download-all" class="button small" href="/api/embeddings" hidden>
     Download all (.zip)
   </a>

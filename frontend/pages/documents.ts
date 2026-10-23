@@ -6,8 +6,9 @@ import {
 } from "../lib/endpoints";
 import type { DocumentOut } from "../lib/endpoints";
 import { count } from "../lib/format";
-import { must } from "../lib/dom";
+import { must, mustBe } from "../lib/dom";
 import { mountThemeToggle } from "../components/theme-toggle/theme-toggle";
+import { bindDownload } from "../components/download/download";
 import { docCard } from "../components/doc-card/doc-card";
 import type { DocActions } from "../components/doc-card/doc-card";
 import { emptyState } from "../components/empty-state/empty-state";
@@ -17,9 +18,12 @@ mountThemeToggle();
 
 const list = must("list");
 const summary = must("summary");
-const downloadAll = must("download-all");
+const downloadAll = mustBe("download-all", HTMLAnchorElement);
 
 function showError(message: string): void {
+  // Replaces the previous one rather than stacking: nothing reloads the list
+  // after a failed download, so repeated clicks would pile boxes up.
+  list.querySelector(".error-box")?.remove();
   list.prepend(errorBox(message));
 }
 
@@ -56,8 +60,13 @@ function actionsFor(doc: DocumentOut): DocActions {
       if (ok) void load();
       return ok;
     },
+    onError: showError,
   };
 }
+
+// The archive link is markup, not built here, so its behaviour is attached
+// once rather than per load.
+bindDownload(downloadAll, showError);
 
 async function load(): Promise<void> {
   try {

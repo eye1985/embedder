@@ -9,6 +9,12 @@
   padding-block: var(--sp-5);
 }
 
+/* Contains the role label, which would otherwise position against the
+   document and grow its scroll height with every turn. */
+.turn {
+  position: relative;
+}
+
 /* A question is short and belongs to you, so it is sided and contained. An
    answer is long and is the thing being read, so it keeps the full measure
    and no box. */

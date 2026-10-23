@@ -13,6 +13,7 @@
 @import url("./components/theme-toggle/theme-toggle.css");
 @import url("./components/button/button.css");
 @import url("./components/error-box/error-box.css");
+@import url("./components/download/download.css");
 @import url("./components/empty-state/empty-state.css");
 @import url("./components/turn/turn.css");
 @import url("./components/composer/composer.css");
