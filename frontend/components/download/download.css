@@ -1,0 +1,6 @@
+/* In flight. Shared by every download, so a button and a source chip report
+   the same state the same way. */
+.downloading {
+  opacity: 0.45;
+  cursor: progress;
+}
