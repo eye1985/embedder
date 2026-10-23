@@ -9,9 +9,16 @@ from dataclasses import dataclass
 
 import psycopg
 
-from db.pool import table_exists
-
 _COLUMNS = "id, provider, model_name, dimensions, table_name, distance, is_active"
+
+
+def table_exists(conn: psycopg.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "select 1 from information_schema.tables "
+        "where table_schema = 'public' and table_name = %s",
+        (table_name,),
+    ).fetchone()
+    return row is not None
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,7 @@ from langchain_postgres import PGEngine, PGVectorStore
 from langchain_postgres.v2.indexes import DistanceStrategy
 
 from db.pool import SQLALCHEMY_URL
-from db.registry import EmbeddingModel
+from db.tables.registry import EmbeddingModel
 
 # Columns every vector table carries as real columns rather than JSON. A search
 # filters on columns of its own table -- HNSW returns its top-k before a join

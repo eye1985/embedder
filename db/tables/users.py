@@ -1,7 +1,7 @@
 """The `users` table.
 
 One row per user, naming the embedding model their uploads and searches
-default to. Auth does not exist yet -- `api/server.py` treats every request as
+default to. Auth does not exist yet -- `api/config.py` treats every request as
 `CURRENT_USER_ID`.
 """
 

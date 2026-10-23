@@ -15,7 +15,7 @@ from langchain_core.runnables import Runnable, RunnableLambda, RunnablePassthrou
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain_openai import ChatOpenAI
 
-from db.registry import EmbeddingModel
+from db.tables.registry import EmbeddingModel
 from db.vectors import get_vector_store
 
 load_dotenv()

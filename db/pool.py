@@ -103,12 +103,3 @@ def close_pool() -> None:
 # pool's worker threads outlive the interpreter, which surfaces as a
 # PythonFinalizationError traceback after the work has already succeeded.
 atexit.register(close_pool)
-
-
-def table_exists(conn: psycopg.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "select 1 from information_schema.tables "
-        "where table_schema = 'public' and table_name = %s",
-        (table_name,),
-    ).fetchone()
-    return row is not None

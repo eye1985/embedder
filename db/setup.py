@@ -14,9 +14,17 @@ from pathlib import Path
 import psycopg
 from psycopg import sql
 
-from db.pool import close_pool, connection, table_exists
-from db.registry import EmbeddingModel, get_model, list_models
-from paths import MIGRATIONS_DIR
+from db.pool import close_pool, connection
+from db.tables.registry import (
+    EmbeddingModel,
+    get_model,
+    list_models,
+    table_exists,
+)
+from paths import PROJECT_ROOT
+
+# Plain SQL migrations, applied in filename order.
+MIGRATIONS_DIR = PROJECT_ROOT / "sql"
 
 # How wide a column each element type can be and still take an HNSW index.
 # `vector` holds 4 bytes per dimension, `halfvec` 2 -- which is why halfvec

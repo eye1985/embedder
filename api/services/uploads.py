@@ -15,10 +15,14 @@ from pathlib import Path
 import psycopg
 from fastapi import HTTPException, UploadFile
 
-from db.documents import delete_document, has_any_vector
 from db.pool import connection
-from db.registry import models_with_tables
-from paths import PROJECT_ROOT, UPLOAD_DIR
+from db.tables.documents import delete_document, has_any_vector
+from db.tables.registry import models_with_tables
+from paths import PROJECT_ROOT
+
+# Where uploaded PDFs land. `sample/` holds the repo's own PDFs and is not
+# this -- deleting a document only removes a file from here.
+UPLOAD_DIR = PROJECT_ROOT / "uploads"
 
 # A demo-sized ceiling, enforced while streaming to disk so an oversized file
 # is never held in memory or left behind on disk.

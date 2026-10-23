@@ -5,9 +5,9 @@ import uuid
 import psycopg
 from langchain_core.documents import Document
 
-from db.documents import unembedded_chunks
-from db.embeddings import mark_embedded
-from db.registry import EmbeddingModel
+from db.tables.documents import unembedded_chunks
+from db.tables.embeddings import mark_embedded
+from db.tables.registry import EmbeddingModel
 from db.vectors import get_vector_store
 
 

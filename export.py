@@ -21,9 +21,9 @@ from pathlib import Path
 
 import psycopg
 
-from db.documents import chunk_rows, get_document, vector_rows
-from db.registry import EmbeddingModel, list_models, models_with_tables
-from db.users import get_user
+from db.tables.documents import chunk_rows, get_document, vector_rows
+from db.tables.registry import EmbeddingModel, list_models, models_with_tables
+from db.tables.users import get_user
 from paths import PROJECT_ROOT
 
 EXPORT_VERSION = 1
@@ -140,7 +140,7 @@ def build_archive(
 ) -> tuple[bytes, str]:
     """Every document the user has, zipped, with a manifest. Returns (zip, filename).
 
-    `documents` is the listing from `api.documents.list_documents` -- passed in
+    `documents` is the listing from `api.services.documents.list_documents` -- passed in
     rather than read here, so the manifest's per-document summary and the
     /documents page cannot disagree.
 

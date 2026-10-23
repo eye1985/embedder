@@ -11,9 +11,9 @@ from pathlib import Path
 
 import psycopg
 
-from db.documents import add_document, count_chunks, find_document
-from db.embeddings import set_document_model
-from db.registry import EmbeddingModel
+from db.tables.documents import add_document, count_chunks, find_document
+from db.tables.embeddings import set_document_model
+from db.tables.registry import EmbeddingModel
 from indexing.chunk import split_documents
 from indexing.embed import embed_document
 from paths import PROJECT_ROOT

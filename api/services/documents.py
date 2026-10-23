@@ -1,6 +1,6 @@
 """The shapes the document endpoints return.
 
-A thin layer: it reads rows through `db/documents.py`, serializes through
+A thin layer: it reads rows through `db/tables/documents.py`, serializes through
 `export.py`, and assembles the dicts FastAPI hands back. No SQL and no export
 format live here.
 
@@ -13,19 +13,20 @@ import uuid
 
 import psycopg
 
-from db.documents import (
+from api.services.uploads import UPLOAD_DIR
+from db.tables.documents import (
     count_chunks,
     delete_vectors,
     document_rows,
     embedded_counts,
     get_document,
 )
-from db.documents import delete_document as delete_document_rows
-from db.embeddings import models_by_document, unmark_embedded
-from db.registry import list_models, models_with_tables
+from db.tables.documents import delete_document as delete_document_rows
+from db.tables.embeddings import models_by_document, unmark_embedded
+from db.tables.registry import list_models, models_with_tables
 from export import build_archive, export_document
 from indexing.embed import embed_document
-from paths import PROJECT_ROOT, UPLOAD_DIR
+from paths import PROJECT_ROOT
 
 
 def list_documents(conn: psycopg.Connection, user_id: int) -> list[dict]:
