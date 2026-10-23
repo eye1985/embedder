@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+
+{% block content %}
+<form id="form" class="form">
+  <label id="drop" class="drop" for="file">
+    <input id="file" type="file" accept="application/pdf,.pdf" hidden />
+    <span class="drop-title">Choose a PDF</span>
+    <span class="drop-hint">or drag one here &middot; 50MB max</span>
+  </label>
+
+  <p id="chosen" class="chosen" hidden></p>
+
+  <section class="section" role="group" aria-labelledby="models-label">
+    <h2 id="models-label" class="section-label">Embed with</h2>
+    <div id="models" class="model-options"></div>
+    <p class="note">
+      The text is extracted and chunked once; each model embeds those same
+      chunks. Extraction and embedding both run inside the request, so a large
+      PDF can take a while.
+    </p>
+  </section>
+
+  {# Only shown once more than one model is checked: with one there is
+     nothing to choose. #}
+  <section
+    id="search-choice"
+    class="section"
+    role="group"
+    aria-labelledby="search-label"
+    hidden
+  >
+    <h2 id="search-label" class="section-label">Search this document with</h2>
+    <div id="search-models" class="radios"></div>
+    <p class="note">
+      Every model embeds the same chunks, so this picks which one ranks
+      results for this document &mdash; not what can be found. You can change
+      it later from Documents.
+    </p>
+  </section>
+
+  <div class="actions">
+    <button id="submit" class="button primary" type="submit" disabled>
+      Upload and embed
+    </button>
+  </div>
+</form>
+
+<div id="status" class="status"></div>
+{% endblock %}

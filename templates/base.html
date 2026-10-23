@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title }}</title>
+
+    {# Inlined, and the only frontend script the bundler never touches: it has
+       to run before first paint or a stored theme flashes the other one, and a
+       module script is deferred. Source: frontend/components/theme-toggle/. #}
+    <script>{% include "components/theme-toggle/theme-preload.js" %}</script>
+
+    {# Hashed filenames, resolved through the Vite manifest by api/assets.py,
+       so nothing here names a built file. #}
+    {%- for href in styles %}
+    <link rel="stylesheet" href="{{ href }}" />
+    {%- endfor %}
+    {%- for href in preloads %}
+    <link rel="modulepreload" href="{{ href }}" />
+    {%- endfor %}
+    {%- for src in scripts %}
+    <script type="module" src="{{ src }}"></script>
+    {%- endfor %}
+  </head>
+  <body>
+    <main class="app{% block app_class %}{% endblock %}">
+      <header class="header">
+        <div class="masthead">
+          <h1>{{ heading }}</h1>
+        </div>
+        {# The only copy of the nav: adding a page is one entry here. #}
+        <nav class="nav">
+          {%- for href, label in [("/", "Chat"), ("/upload", "Upload"), ("/documents", "Documents")] %}
+          <a href="{{ href }}"{% if href == current %} class="current"{% endif %}>{{ label }}</a>
+          {%- endfor %}
+        </nav>
+      </header>
+
+      {% block content %}{% endblock %}
+    </main>
+  </body>
+</html>

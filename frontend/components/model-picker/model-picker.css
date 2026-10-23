@@ -1,0 +1,113 @@
+/* Holds its line open while the model list is being fetched. */
+.model-options {
+  display: flex;
+  flex-direction: column;
+  min-height: 1lh;
+}
+
+.model-options p {
+  margin: 0;
+  font-size: var(--fs-small);
+  color: var(--fg-3);
+}
+
+.model {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  margin-inline: calc(var(--sp-3) * -1);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.model:hover {
+  background: var(--sunken);
+}
+
+.model input {
+  margin: 4px 0 0;
+  accent-color: var(--highlight);
+}
+
+.model-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.model-name {
+  font-size: var(--fs-ui);
+}
+
+.model-meta {
+  font-family: var(--font-mono);
+  font-size: var(--fs-tiny);
+  color: var(--fg-3);
+  overflow-wrap: anywhere;
+}
+
+/* Registered, but db.setup has not created its vector table. */
+.model.unavailable {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.model.unavailable:hover {
+  background: transparent;
+}
+
+.radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+
+.radio {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-ui);
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  transition: border-color 120ms, background 120ms;
+}
+
+.radio:hover {
+  border-color: var(--rule-strong);
+}
+
+.radio:has(input:checked) {
+  background: var(--highlight-soft);
+  border-color: var(--highlight);
+}
+
+.radio input {
+  margin: 0;
+  accent-color: var(--highlight);
+  cursor: pointer;
+}
+
+.radio input:disabled {
+  cursor: default;
+}
+
+.radio-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.35;
+}
+
+.radio-name {
+  font-size: var(--fs-ui);
+}
+
+.radio-meta {
+  font-size: var(--fs-micro);
+  color: var(--fg-3);
+}

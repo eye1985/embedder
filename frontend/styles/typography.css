@@ -1,0 +1,13 @@
+/* Shared text utilities. */
+
+.muted {
+  color: var(--fg-3);
+}
+
+.note {
+  margin: 0;
+  max-width: 62ch;
+  font-size: var(--fs-small);
+  line-height: 1.6;
+  color: var(--fg-3);
+}

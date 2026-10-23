@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block app_class %} chat{% endblock %}
+
+{% block content %}
+<div id="messages" class="messages">
+  <div class="empty">
+    <p class="empty-title">Ask a question</p>
+    <p class="empty-note">
+      Answers are drawn from the documents you have ingested, with the
+      passages retrieved before the model replies.
+    </p>
+  </div>
+</div>
+
+<form id="form" class="composer">
+  <div class="composer-shell">
+    <textarea rows="1" placeholder="Ask about your documents&hellip;" autofocus></textarea>
+    <button class="button primary" type="submit">Send</button>
+  </div>
+  <p class="composer-hint">
+    Enter to send &middot; Shift + Enter for a new line
+  </p>
+</form>
+{% endblock %}

@@ -1,0 +1,83 @@
+.messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-4);
+  padding-block: var(--sp-5);
+}
+
+/* A question is short and belongs to you, so it is sided and contained. An
+   answer is long and is the thing being read, so it keeps the full measure
+   and no box. */
+.turn.user {
+  align-self: flex-end;
+  max-width: 70%;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-lg);
+}
+
+.turn.assistant {
+  align-self: stretch;
+}
+
+/* 70% of a phone is too narrow to hold a sentence. */
+@media (max-width: 34rem) {
+  .turn.user {
+    max-width: 85%;
+  }
+}
+
+.turn.error {
+  align-self: stretch;
+  padding: var(--sp-3) var(--sp-4);
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-rule);
+  border-radius: var(--r);
+}
+
+/* Air before a new question, so each exchange reads as a pair rather than an
+   even stack. */
+.turn.user + * {
+  margin-top: var(--sp-1);
+}
+
+.turn.assistant + .turn.user {
+  margin-top: var(--sp-5);
+}
+
+/* Position and tint carry the speaker on screen; the label stays for anyone
+   listening to the page. */
+.turn-role {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.turn-body {
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.turn-body.pending::after {
+  content: "▋";
+  margin-left: 1px;
+  color: var(--highlight);
+  animation: blink 1s steps(2, start) infinite;
+}
+
+@keyframes blink {
+  to {
+    visibility: hidden;
+  }
+}

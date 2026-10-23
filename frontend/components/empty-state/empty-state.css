@@ -1,0 +1,21 @@
+.empty {
+  margin: auto;
+  padding: var(--sp-6) 0;
+  max-width: 40ch;
+  text-align: center;
+  font-size: var(--fs-small);
+  color: var(--fg-3);
+}
+
+.empty-title {
+  margin: 0 0 var(--sp-2);
+  font-family: var(--font-serif);
+  font-size: var(--fs-head);
+  font-weight: 500;
+  color: var(--fg);
+}
+
+.empty-note {
+  margin: 0;
+  line-height: 1.6;
+}

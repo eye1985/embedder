@@ -1,0 +1,45 @@
+.composer {
+  border-top: 1px solid var(--rule);
+  padding-top: var(--sp-4);
+}
+
+.composer-shell {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r);
+  transition: border-color 140ms;
+}
+
+.composer-shell:focus-within {
+  border-color: var(--fg);
+}
+
+.composer textarea {
+  flex: 1;
+  min-width: 0;
+  max-height: 184px;
+  padding: var(--sp-2) var(--sp-1);
+  font: inherit;
+  line-height: 24px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  resize: none;
+  overflow-y: hidden;
+}
+
+.composer textarea:focus {
+  outline: none;
+}
+
+.composer-hint {
+  margin: var(--sp-2) var(--sp-1) 0;
+  font-size: var(--fs-micro);
+  letter-spacing: 0.04em;
+  color: var(--fg-3);
+  text-align: right;
+}

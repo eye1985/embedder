@@ -5,17 +5,18 @@ from contextlib import asynccontextmanager
 from operator import itemgetter
 from typing import Annotated
 
-from fastapi import FastAPI, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, FastAPI, Form, HTTPException, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 from psycopg_pool import PoolTimeout
 from pydantic import BaseModel
 from starlette.responses import (
-    FileResponse,
     JSONResponse,
     Response,
     StreamingResponse,
 )
 
+from api.assets import AssetsNotBuilt, assets
 from api.documents import (
     delete_document,
     delete_embeddings,
@@ -23,6 +24,17 @@ from api.documents import (
     export_archive,
     export_document,
     list_documents,
+)
+from api.schemas import (
+    DeleteDocumentResult,
+    DeleteEmbeddingsResult,
+    DocumentOut,
+    EmbedResult,
+    ImportResult,
+    ModelOut,
+    SearchableResult,
+    SearchModelResult,
+    UploadStatus,
 )
 from api.uploads import (
     begin_upload,
@@ -45,6 +57,11 @@ from paths import PROJECT_ROOT
 
 logger = logging.getLogger("api")
 
+FRONTEND_DIR = PROJECT_ROOT / "frontend"
+TEMPLATES_DIR = PROJECT_ROOT / "templates"
+
+# Vite's build output. Absent until `npm run build` has run, which is why
+# the mount below does not insist on it existing.
 STATIC_DIR = PROJECT_ROOT / "static"
 
 # Placeholder until there is real auth -- every request is treated as this
@@ -99,7 +116,19 @@ class NoCacheStaticFiles(StaticFiles):
         return response
 
 
-app.mount("/static", NoCacheStaticFiles(directory=STATIC_DIR), name="static")
+app.mount(
+    "/static",
+    NoCacheStaticFiles(directory=STATIC_DIR, check_dir=False),
+    name="static",
+)
+
+# `frontend/` is searched too, so a template can inline a source file that
+# has to run before anything else -- the theme preload in base.html.
+templates = Jinja2Templates(directory=[TEMPLATES_DIR, FRONTEND_DIR])
+
+# The JSON API. Prefixed so it cannot collide with a page: the documents
+# page and the documents list would otherwise both want GET "/documents".
+api = APIRouter(prefix="/api")
 
 
 @app.exception_handler(PoolTimeout)
@@ -110,6 +139,13 @@ async def pool_timeout_handler(request: Request, exc: PoolTimeout):
     return JSONResponse(
         {"detail": "Database unavailable. Is Postgres running?"}, status_code=503
     )
+
+
+@app.exception_handler(AssetsNotBuilt)
+async def assets_not_built_handler(request: Request, exc: AssetsNotBuilt):
+    """The frontend has not been built, so no page can be rendered."""
+    logger.error("frontend not built: %s", exc)
+    return JSONResponse({"detail": str(exc)}, status_code=503)
 
 
 @app.exception_handler(Exception)
@@ -127,13 +163,48 @@ async def unhandled_handler(request: Request, exc: Exception):
     )
 
 
-@app.get("/")
-def root():
-    # Served outside the static mount, so it needs the same header -- this is
-    # the page a browser is most likely to have cached.
-    return FileResponse(
-        STATIC_DIR / "index.html", headers={"cache-control": "no-cache"}
+def _page(request: Request, name: str, title: str, heading: str, current: str):
+    """One of the page shells.
+
+    `current` is the nav href to mark as the page you are on; the nav itself
+    lives in `templates/base.html` and is the only copy of it. The page's
+    script entry follows from the template name, and its built URL is resolved
+    through the Vite manifest, so the markup never names a hashed file.
+
+    `no-cache` is set for the same reason the static mount sets it -- an edited
+    template would otherwise keep being served from the browser's cache. The
+    built assets are hashed, so they are safe to cache hard.
+    """
+    entry = f"pages/{name.removesuffix('.html')}.ts"
+    bundle = assets(STATIC_DIR, "main.css", entry)
+    return templates.TemplateResponse(
+        request=request,
+        name=name,
+        context={
+            "title": title,
+            "heading": heading,
+            "current": current,
+            "styles": bundle["styles"],
+            "scripts": bundle["scripts"],
+            "preloads": bundle["preloads"],
+        },
+        headers={"cache-control": "no-cache"},
     )
+
+
+@app.get("/", include_in_schema=False)
+def chat_page(request: Request):
+    return _page(request, "chat.html", "Chat", "Document chat", "/")
+
+
+@app.get("/upload", include_in_schema=False)
+def upload_page(request: Request):
+    return _page(request, "upload.html", "Upload", "Upload", "/upload")
+
+
+@app.get("/documents", include_in_schema=False)
+def documents_page(request: Request):
+    return _page(request, "documents.html", "Documents", "Documents", "/documents")
 
 
 class Chat(BaseModel):
@@ -143,7 +214,7 @@ class Chat(BaseModel):
 # Sync `def`: reading which model searches which document is a blocking
 # query, and the chain is assembled before a single token is streamed.
 # FastAPI runs this in a worker thread and then streams on the event loop.
-@app.post("/chat")
+@api.post("/chat")
 def chat(prompt: Chat):
     """Answer from the user's searchable documents.
 
@@ -227,7 +298,7 @@ def _search_model_for(chosen: list, table_name: str | None):
     )
 
 
-@app.get("/models")
+@api.get("/models", response_model=list[ModelOut])
 def list_models_endpoint():
     """Every registered embedding model, for the upload form's pickers.
 
@@ -287,7 +358,7 @@ def _discard_upload(conn, pdf):
         logger.exception("could not clean up failed upload %s", pdf.name)
 
 
-@app.post("/upload")
+@api.post("/upload", response_model=ImportResult)
 def upload_endpoint(
     file: UploadFile,
     models: Annotated[list[str] | None, Form()] = None,
@@ -382,7 +453,7 @@ def _attachment(filename: str) -> dict[str, str]:
 # Sync `def` for the same reason as /upload: psycopg blocks, so FastAPI runs
 # these in a worker thread rather than stalling the event loop while a large
 # document is serialized.
-@app.get("/upload/status")
+@api.get("/upload/status", response_model=UploadStatus)
 def upload_status_endpoint():
     """Whether an upload is running, and the outcome of the last one.
 
@@ -393,14 +464,14 @@ def upload_status_endpoint():
     return upload_status(CURRENT_USER_ID)
 
 
-@app.get("/documents")
+@api.get("/documents", response_model=list[DocumentOut])
 def list_documents_endpoint():
     """The user's documents, with chunk counts and per-model embedding counts."""
     with connection() as conn:
         return list_documents(conn, CURRENT_USER_ID)
 
 
-@app.get("/documents/{document_id}/embeddings")
+@api.get("/documents/{document_id}/embeddings")
 def download_document_embeddings(document_id: uuid.UUID):
     """One document's chunks and vectors, as a JSON file.
 
@@ -421,7 +492,7 @@ def download_document_embeddings(document_id: uuid.UUID):
     return JSONResponse(payload, headers=_attachment(filename))
 
 
-@app.get("/embeddings")
+@api.get("/embeddings")
 def download_all_embeddings():
     """Every document the user has, as a zip of JSON files plus a manifest."""
     with connection() as conn:
@@ -443,7 +514,7 @@ class ReEmbed(BaseModel):
     models: list[str] | None = None
 
 
-@app.patch("/documents/{document_id}")
+@api.patch("/documents/{document_id}", response_model=SearchableResult)
 def set_document_searchable(document_id: uuid.UUID, body: Searchable):
     """Take a document in or out of search entirely, for every model.
 
@@ -459,7 +530,10 @@ def set_document_searchable(document_id: uuid.UUID, body: Searchable):
         return {"document_id": str(document_id), "searchable": body.searchable}
 
 
-@app.put("/documents/{document_id}/search-model/{table_name}")
+@api.put(
+    "/documents/{document_id}/search-model/{table_name}",
+    response_model=SearchModelResult,
+)
 def set_document_search_model(document_id: uuid.UUID, table_name: str):
     """Choose which model this document is retrieved through.
 
@@ -477,7 +551,7 @@ def set_document_search_model(document_id: uuid.UUID, table_name: str):
 
 
 # Sync `def` for the same reason as /upload: this calls the embedding API.
-@app.post("/documents/{document_id}/embeddings")
+@api.post("/documents/{document_id}/embeddings", response_model=EmbedResult)
 def embed_document_endpoint(document_id: uuid.UUID, body: ReEmbed):
     """Embed an existing document with one or more models.
 
@@ -493,7 +567,7 @@ def embed_document_endpoint(document_id: uuid.UUID, body: ReEmbed):
             raise HTTPException(404, str(exc)) from exc
 
 
-@app.delete("/documents/{document_id}")
+@api.delete("/documents/{document_id}", response_model=DeleteDocumentResult)
 def delete_document_endpoint(document_id: uuid.UUID):
     """Delete a document, its chunks, its vectors, and its uploaded PDF.
 
@@ -507,7 +581,9 @@ def delete_document_endpoint(document_id: uuid.UUID):
             raise HTTPException(404, str(exc)) from exc
 
 
-@app.delete("/documents/{document_id}/embeddings")
+@api.delete(
+    "/documents/{document_id}/embeddings", response_model=DeleteEmbeddingsResult
+)
 def delete_document_embeddings(document_id: uuid.UUID, model: str | None = None):
     """Delete a document's vectors, keeping the document and its chunks.
 
@@ -523,3 +599,6 @@ def delete_document_embeddings(document_id: uuid.UUID, model: str | None = None)
             return delete_embeddings(conn, CURRENT_USER_ID, document_id, model)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
+
+
+app.include_router(api)

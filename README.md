@@ -8,6 +8,12 @@ Qwen, or anything else you register -- with one vector table per model.
 
 - Python >= 3.14
 - [uv](https://docs.astral.sh/uv/)
+- Node >= 20 and npm (to build the frontend)
+
+> `typescript` is pinned to `^5` on purpose. TypeScript 7's native port
+> does not expose the compiler factory API that `openapi-typescript`
+> uses, so `npm run api-types` fails on 7.x. Do not widen that range
+> until openapi-typescript supports it.
 - Docker (for Postgres + pgAdmin)
 - An OpenAI API key
 
@@ -19,7 +25,18 @@ Qwen, or anything else you register -- with one vector table per model.
 uv sync
 ```
 
-**2. Start Postgres**
+**2. Build the frontend**
+
+The pages are server-rendered shells; everything inside them is bundled from
+`frontend/` into `static/`, which is git-ignored and recreated by the build.
+Nothing is served until this has run once.
+
+```bash
+npm install
+npm run build
+```
+
+**3. Start Postgres**
 
 The database image is `pgvector/pgvector`, which ships the `vector` extension
 preinstalled.
@@ -37,7 +54,7 @@ Override any of these with `POSTGRES_USER`, `POSTGRES_PASSWORD`,
 `POSTGRES_PORT`, `PGADMIN_DEFAULT_EMAIL`, `PGADMIN_DEFAULT_PASSWORD`, or
 `PGADMIN_PORT`.
 
-**3. Add your API key**
+**4. Add your API key**
 
 Create a `.env` file (git-ignored):
 
@@ -45,7 +62,7 @@ Create a `.env` file (git-ignored):
 OPENAI_API_KEY=sk-...
 ```
 
-**4. Create the schema**
+**5. Create the schema**
 
 ```bash
 uv run python -m db.setup
@@ -72,7 +89,7 @@ Created 'emb_openai_te3_small' with vector(1536).
 Created 'emb_openai_te3_large' with halfvec(3072).
 ```
 
-**5. The seed user**
+**6. The seed user**
 
 Retrieval is scoped per user, so the app needs a row in `users` before it will
 start. `005_seed_user.sql` creates one for you:
@@ -210,28 +227,50 @@ limit, so it would be stored unindexed.
 uv run uvicorn api.server:app --reload
 ```
 
+Python reloads itself; the frontend is built, so it does not. Pick one:
+
+| command | when |
+| ------- | ---- |
+| `npm run build` | Typecheck, bundle and minify once. What deploys. |
+| `npm run watch` | Rebuild on every save. Reload the page yourself. |
+| `npm run dev` | Vite dev server with hot reloading, on port 5173. |
+| `npm run typecheck` | `tsc --noEmit`, nothing written. |
+| `npm run api-types` | Regenerate `frontend/lib/api-types.ts` from the routes. |
+
+`npm run dev` serves the assets itself, so the app has to be told to point at
+it rather than at the build:
+
+```bash
+VITE_DEV_SERVER=http://localhost:5173 uv run uvicorn api.server:app --reload
+```
+
+Run `npm run api-types` after changing any response model -- it dumps the
+OpenAPI schema and regenerates the frontend's types from it, so a renamed
+field fails `npm run build` instead of reaching the browser.
+
 Three pages, all scoped to `CURRENT_USER_ID` (default `1`) until real auth
 exists:
 
 | page | what it does |
 | ---- | ------------ |
 | `/` | Chat over the imported documents. |
-| `/static/upload.html` | Upload a PDF and choose which models embed it. |
-| `/static/documents.html` | List documents; download or delete them. |
+| `/upload` | Upload a PDF and choose which models embed it. |
+| `/documents` | List documents; download or delete them. |
 
-The routes behind them:
+The JSON API behind them. It is prefixed with `/api` so a route can never
+collide with a page -- `/documents` is the page, `/api/documents` is the list:
 
 | method | route | purpose |
 | ------ | ----- | ------- |
-| `POST` | `/chat` | Streams an answer over the user's embeddings. |
-| `GET` | `/models` | Registered models, for the upload picker. |
-| `POST` | `/upload` | Store a PDF, chunk it, embed it. |
-| `GET` | `/upload/status` | Whether an upload is running, and its outcome. |
-| `GET` | `/documents` | List documents with chunk and vector counts. |
-| `GET` | `/documents/{id}/embeddings` | Download one document as JSON. |
-| `GET` | `/embeddings` | Download every document as a zip. |
-| `DELETE` | `/documents/{id}` | Delete a document, its vectors, and its PDF. |
-| `DELETE` | `/documents/{id}/embeddings` | Delete vectors, keep the chunks. |
+| `POST` | `/api/chat` | Streams an answer over the user's embeddings. |
+| `GET` | `/api/models` | Registered models, for the upload picker. |
+| `POST` | `/api/upload` | Store a PDF, chunk it, embed it. |
+| `GET` | `/api/upload/status` | Whether an upload is running, and its outcome. |
+| `GET` | `/api/documents` | List documents with chunk and vector counts. |
+| `GET` | `/api/documents/{id}/embeddings` | Download one document as JSON. |
+| `GET` | `/api/embeddings` | Download every document as a zip. |
+| `DELETE` | `/api/documents/{id}` | Delete a document, its vectors, and its PDF. |
+| `DELETE` | `/api/documents/{id}/embeddings` | Delete vectors, keep the chunks. |
 
 ### Chat
 
@@ -254,7 +293,7 @@ restart and grows for as long as the process lives. `get_by_session_id` in
 ### Uploading a PDF
 
 ```bash
-curl -X POST http://localhost:8000/upload \
+curl -X POST http://localhost:8000/api/upload \
   -F 'file=@sample/storybook.pdf' \
   -F 'models=emb_openai_te3_small'
 ```
@@ -339,9 +378,9 @@ describing content that no longer exists. Rename, or delete the document first.
 ### Listing and downloading
 
 ```bash
-curl http://localhost:8000/documents
-curl -OJ http://localhost:8000/documents/<document_id>/embeddings
-curl -OJ http://localhost:8000/embeddings
+curl http://localhost:8000/api/documents
+curl -OJ http://localhost:8000/api/documents/<document_id>/embeddings
+curl -OJ http://localhost:8000/api/embeddings
 ```
 
 `/documents` returns each document with its chunk count and per-model vector
@@ -364,8 +403,8 @@ A `null` there means that model holds no vector for that chunk.
 ### Deleting
 
 ```bash
-curl -X DELETE http://localhost:8000/documents/<document_id>
-curl -X DELETE 'http://localhost:8000/documents/<document_id>/embeddings?model=emb_qwen3_0_6b'
+curl -X DELETE http://localhost:8000/api/documents/<document_id>
+curl -X DELETE 'http://localhost:8000/api/documents/<document_id>/embeddings?model=emb_qwen3_0_6b'
 ```
 
 The first removes the document, its chunks, every vector for them, and the
@@ -452,7 +491,17 @@ serves them.
 | `api/server.py` | FastAPI app; opens and closes the pools via lifespan. |
 | `api/uploads.py` | Upload validation, disk writes, and `upload_jobs` tracking. |
 | `api/documents.py` | Assembles the document endpoints' response shapes. |
-| `static/` | The three demo pages: chat, upload, documents. |
+| `api/schemas.py` | The response models. What the generated frontend types come from. |
+| `api/assets.py` | Resolves a frontend entry to built URLs via the Vite manifest. |
+| `templates/` | Jinja2 page shells. `base.html` holds the only copy of the nav. |
+| `frontend/styles/` | Tokens, document defaults, page shell, transitions. |
+| `frontend/components/` | One folder per component: its script and its stylesheet. |
+| `frontend/lib/` | `el`, the fetch wrappers, the formatters, the typed endpoints. |
+| `frontend/lib/api-types.ts` | Generated from the OpenAPI schema. Do not edit. |
+| `frontend/pages/` | One module per page; wires components to the API. |
+| `frontend/main.css` | Imports every stylesheet, in cascade order. |
+| `vite.config.ts` | One entry per page plus the stylesheet; builds into `static/`. |
+| `static/` | Build output. Git-ignored; `npm run build` recreates it. |
 | `sql/` | SQL migrations. The vector-table DDL is in `db/setup.py`. |
 
 ### Schema is created once, on purpose

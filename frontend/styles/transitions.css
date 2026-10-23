@@ -1,0 +1,60 @@
+/* Cross-page view transitions, run by the browser on <a href> navigation. */
+
+/* Same-origin navigations only, run by the browser: the nav stays plain
+   <a href>, and browsers without support just navigate. */
+@view-transition {
+  navigation: auto;
+}
+
+::view-transition-old(page-header),
+::view-transition-new(page-header) {
+  animation-duration: 160ms;
+}
+
+::view-transition-old(root) {
+  animation: page-out 120ms ease-in both;
+}
+
+::view-transition-new(root) {
+  animation: page-in 200ms ease-out both;
+}
+
+@keyframes page-out {
+  to {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root) {
+    animation: page-out-still 120ms ease-in both;
+  }
+
+  ::view-transition-new(root) {
+    animation: page-in-still 120ms ease-out both;
+  }
+
+  * {
+    transition-duration: 1ms !important;
+  }
+}
+
+@keyframes page-out-still {
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes page-in-still {
+  from {
+    opacity: 0;
+  }
+}

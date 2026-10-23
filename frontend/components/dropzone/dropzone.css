@@ -1,0 +1,51 @@
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-1);
+  padding: var(--sp-7) var(--sp-4);
+  text-align: center;
+  background: var(--sunken);
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--r);
+  cursor: pointer;
+  transition: border-color 140ms, background 140ms;
+}
+
+.drop:hover,
+.drop.over {
+  border-color: var(--highlight);
+  background: var(--highlight-soft);
+}
+
+.drop.over {
+  border-style: solid;
+}
+
+.drop-title {
+  font-family: var(--font-serif);
+  font-size: var(--fs-head);
+  font-weight: 500;
+}
+
+.drop-hint {
+  font-size: var(--fs-small);
+  color: var(--fg-3);
+}
+
+.drop.busy {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.chosen {
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-small);
+  color: var(--fg-2);
+  background: var(--sunken);
+  border-radius: var(--r-sm);
+  overflow-wrap: anywhere;
+}

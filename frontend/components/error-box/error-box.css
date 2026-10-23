@@ -1,0 +1,9 @@
+.error-box {
+  margin: 0;
+  padding: var(--sp-3) var(--sp-4);
+  font-size: var(--fs-ui);
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-rule);
+  border-radius: var(--r);
+}

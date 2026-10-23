@@ -1,0 +1,20 @@
+{
+  "name": "embeddings-frontend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:api": "VITE_DEV_SERVER=http://localhost:5173 uv run uvicorn api.server:app --reload",
+    "build": "tsc --noEmit && vite build",
+    "watch": "vite build --watch",
+    "typecheck": "tsc --noEmit",
+    "openapi": "uv run python -c \"import json; from api.server import app; print(json.dumps(app.openapi(), indent=2))\" > openapi.json",
+    "api-types": "npm run openapi && openapi-typescript openapi.json -o frontend/lib/api-types.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "openapi-typescript": "^7.13.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.5"
+  }
+}

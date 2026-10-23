@@ -22,3 +22,10 @@ CLAUDE.md
 sample/*
 #uploads
 uploads/
+
+#node
+node_modules/
+
+#frontend build output (vite writes this; `npm run build` recreates it)
+/static/
+openapi.json

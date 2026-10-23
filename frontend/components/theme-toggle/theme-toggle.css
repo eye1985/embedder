@@ -1,0 +1,52 @@
+.theme-toggle {
+  flex-shrink: 0;
+  padding: 7px;
+  color: var(--fg-3);
+  background: transparent;
+  border-color: transparent;
+  border-radius: var(--r-sm);
+}
+
+.theme-toggle:hover {
+  color: var(--fg);
+  background: var(--sunken);
+  border-color: var(--rule);
+}
+
+.theme-toggle svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
+/* The icon offers the theme you would switch to, so it has to track the
+   resolved theme -- stored choice first, OS preference otherwise. */
+.theme-toggle .icon-sun {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme-toggle .icon-sun {
+    display: block;
+  }
+
+  :root:not([data-theme="light"]) .theme-toggle .icon-moon {
+    display: none;
+  }
+}
+
+:root[data-theme="dark"] .theme-toggle .icon-sun {
+  display: block;
+}
+
+:root[data-theme="dark"] .theme-toggle .icon-moon {
+  display: none;
+}
+
+:root[data-theme="light"] .theme-toggle .icon-sun {
+  display: none;
+}
+
+:root[data-theme="light"] .theme-toggle .icon-moon {
+  display: block;
+}

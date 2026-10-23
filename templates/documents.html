@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="toolbar">
+  <p id="summary" class="muted"></p>
+  {# A plain link, not a fetch: the browser saves the response itself,
+     because /api/embeddings sets Content-Disposition. #}
+  <a id="download-all" class="button small" href="/api/embeddings" hidden>
+    Download all (.zip)
+  </a>
+</section>
+
+<div id="list" class="list"></div>
+{% endblock %}

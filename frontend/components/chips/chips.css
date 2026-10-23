@@ -1,0 +1,77 @@
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+  margin: 0;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 5px 9px;
+  font-size: var(--fs-tiny);
+  color: var(--fg-2);
+  background: var(--sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  transition: border-color 120ms, background 120ms, color 120ms;
+}
+
+.chip-name {
+  font-family: var(--font-mono);
+  letter-spacing: -0.01em;
+}
+
+.chip-count {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-3);
+}
+
+/* The model this document is retrieved through. */
+.chip.active {
+  color: var(--fg);
+  background: var(--highlight-soft);
+  border-color: var(--highlight);
+}
+
+.chip.active .chip-name {
+  font-weight: 600;
+}
+
+.chip.active .chip-count {
+  color: var(--highlight);
+}
+
+/* Registered but holding no vectors for this document. */
+.chip.zero {
+  opacity: 0.55;
+}
+
+.chip.zero .chip-count {
+  color: var(--fg-3);
+}
+
+/* Chips carry the per-document radio: which model answers for it. */
+.chip input {
+  margin: 0;
+  accent-color: var(--highlight);
+  cursor: pointer;
+}
+
+.chip:has(input) {
+  cursor: pointer;
+}
+
+.chip:has(input:hover) {
+  border-color: var(--rule-strong);
+}
+
+.chip:has(input:disabled) {
+  cursor: default;
+}
+
+.chip input:disabled {
+  cursor: default;
+}

@@ -1,0 +1,32 @@
+/* The document-level master switch. */
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-shrink: 0;
+  padding: 5px 10px;
+  font-size: var(--fs-small);
+  color: var(--fg-3);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 120ms, border-color 120ms;
+}
+
+.switch:hover {
+  border-color: var(--rule-strong);
+}
+
+/* The unchecked box is the off state; greying the label would read as
+   disabled, which it is not. */
+.switch:has(input:checked) {
+  color: var(--fg);
+  border-color: var(--rule-strong);
+}
+
+.switch input {
+  margin: 0;
+  accent-color: var(--highlight);
+  cursor: pointer;
+}
