@@ -118,9 +118,10 @@ def chat(prompt: Chat):
     effect on the next question, not the next restart.
 
     The body is an event stream: a `token` per piece of the answer, then
-    `sources` naming the documents the answer cited, then `done`. Not every
-    question is searched -- the graph decides -- and one that was not, or one
-    answered without leaning on anything retrieved, sends an empty `sources`.
+    `sources` naming the documents the answer cited, then `done`. Every
+    question is searched, so an empty `sources` means the answer leaned on
+    nothing retrieved -- the passages did not cover the question, or the user
+    has nothing searchable.
     """
     with connection() as conn:
         groups = {
@@ -137,8 +138,8 @@ def chat(prompt: Chat):
         # event instead -- the alternative is a silent truncation that reads
         # like a short answer.
         try:
-            # `messages` mode emits every LLM call in the graph, and the router
-            # is one of them -- its decision is not part of the answer.
+            # `messages` mode emits every LLM call in the graph, and the
+            # summariser is one of them -- its notes are not the answer.
             async for chunk, metadata in graph.astream(
                 {"messages": [HumanMessage(prompt.prompt)]},
                 config=config,

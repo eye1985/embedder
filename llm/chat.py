@@ -7,12 +7,10 @@ from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_core.messages import AnyMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import Runnable
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
-from pydantic import BaseModel, Field
 
 from db.pool import connection
 from db.tables.documents import cited_chunks
@@ -34,12 +32,11 @@ if not os.getenv("OPENAI_API_KEY"):
 # The model that answers. Overridable per deployment, as CURRENT_USER_ID is.
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")
 
-# Routing and summarising: one returns a bool, the other writes notes nobody
-# reads directly, so neither needs the model that answers.
+# Summarising writes notes nobody reads directly, so it does not need the
+# model that answers.
 UTILITY_MODEL = os.getenv("UTILITY_MODEL", "gpt-4o-mini")
 
 _llm: ChatOpenAI | None = None
-_router: Runnable | None = None
 _summarizer: ChatOpenAI | None = None
 _llm_lock = threading.Lock()
 
@@ -47,32 +44,6 @@ _llm_lock = threading.Lock()
 # thread_id, which is per user -- changing a document's model continues the
 # conversation rather than restarting it.
 CHECKPOINTER = InMemorySaver()
-
-ROUTE_PROMPT = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            (
-                "Decide whether answering the user's latest message needs a "
-                "search of their uploaded documents.\n"
-                "Search when the answer depends on what a document says: "
-                "facts, figures, names, or anything the documents would "
-                "state.\n"
-                "Search when asked what exists -- which documents, stories or "
-                "topics are available, or what you have, know, hold or "
-                "remember. You have no knowledge of your own, so anything you "
-                "'have' is in their documents and finding out means "
-                "searching.\n"
-                "Only two things skip the search: greetings and small talk, "
-                "and questions about this conversation itself -- what was "
-                "said in it earlier, or redoing an answer already given.\n"
-                "The latest message may lean on earlier turns, so read it in "
-                "context before deciding."
-            ),
-        ),
-        MessagesPlaceholder("messages"),
-    ]
-)
 
 CONTEXT_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -88,7 +59,12 @@ CONTEXT_PROMPT = ChatPromptTemplate.from_messages(
                 "where two documents support the same one. Passages from the "
                 "same document share a number.\n"
                 "Cite nothing you did not use: an uncited passage is reported "
-                "to the user as not having contributed to the answer.\n\n"
+                "to the user as not having contributed to the answer.\n"
+                "The passages are whatever the search returned, and may not "
+                "cover the question. When they do not, say so plainly and "
+                "then answer from your own knowledge, citing nothing -- an "
+                "uncited answer is what tells the user it did not come from "
+                "their documents.\n\n"
                 "{context}"
             ),
         ),
@@ -101,8 +77,9 @@ PLAIN_PROMPT = ChatPromptTemplate.from_messages(
         (
             "system",
             (
-                "Answer from the conversation so far. No documents were "
-                "searched for this question."
+                "The user has no searchable documents, so there was "
+                "nothing to retrieve. Answer from the conversation so far "
+                "and your own knowledge."
             ),
         ),
         MessagesPlaceholder("messages"),
@@ -120,25 +97,15 @@ FETCH_K = 50
 RRF_K = 60
 
 
-class Route(BaseModel):
-    """Whether the question has to be answered from the documents."""
-
-    needs_search: bool = Field(
-        description="True if answering requires searching the user's documents."
-    )
-
-
 class ChatState(TypedDict):
     """What one conversation carries between turns.
 
     `messages` is the history, accumulated by the `add_messages` reducer.
-    `needs_search` and `context` belong to the turn in flight: `decide` clears
-    the context at the top of every turn, so a turn that skips retrieval
-    cannot report the previous turn's chunks as its sources.
+    `context` belongs to the turn in flight: `retrieve` replaces it on every
+    turn, so a turn cannot report the previous turn's chunks as its sources.
     """
 
     messages: Annotated[list[AnyMessage], add_messages]
-    needs_search: bool
     context: list[Document]
     summary: str | None
     summarized: int
@@ -156,22 +123,6 @@ def _chat_llm() -> ChatOpenAI:
         if _llm is None:
             _llm = ChatOpenAI(model=CHAT_MODEL, temperature=0, streaming=True)
         return _llm
-
-
-def _route_llm():
-    """The same model, asked for a bool instead of prose.
-
-    `disable_streaming` because a streaming handler anywhere on the run makes
-    every model call in the graph stream, this one included -- and streaming a
-    one-field object back a token at a time buys nothing.
-    """
-    global _router
-    with _llm_lock:
-        if _router is None:
-            _router = ChatOpenAI(
-                model=UTILITY_MODEL, temperature=0, disable_streaming=True
-            ).with_structured_output(Route)
-        return _router
 
 
 def _summary_llm() -> ChatOpenAI:
@@ -369,20 +320,18 @@ def build_graph(user_id: int, groups: dict[EmbeddingModel, list[str]]):
     async def compact(state: ChatState) -> dict:
         return await HISTORY.compact(_conversation(state))
 
-    async def decide(state: ChatState) -> dict:
-        # Nothing searchable means there is nothing to route to, and asking
-        # the model would spend a call to be told so.
-        if not groups:
-            return {"needs_search": False, "context": []}
-
-        route = await _route_llm().ainvoke(
-            ROUTE_PROMPT.invoke({"messages": HISTORY.view(_conversation(state))})
-        )
-        return {"needs_search": route.needs_search, "context": []}
-
     # Sync: the search is blocking work, so the graph runs it on a worker
     # thread instead of on the event loop.
     def retrieve(state: ChatState) -> dict:
+        # Every question is searched. Judging beforehand whether one needed
+        # the documents cost a model call to get wrong: a question that looks
+        # like general knowledge reads as not needing them, which is exactly
+        # the question the documents were uploaded to answer. The passages go
+        # to `answer`, which falls back to its own knowledge when they turn
+        # out not to cover the question.
+        if not groups:
+            return {"context": []}
+
         question = state["messages"][-1].text
         return {"context": _label(user_id, _search(user_id, groups, question))}
 
@@ -398,17 +347,11 @@ def build_graph(user_id: int, groups: dict[EmbeddingModel, list[str]]):
 
     builder = StateGraph(ChatState)
     builder.add_node("compact", compact)
-    builder.add_node("decide", decide)
     builder.add_node("retrieve", retrieve)
     builder.add_node("answer", answer)
 
     builder.add_edge(START, "compact")
-    builder.add_edge("compact", "decide")
-    builder.add_conditional_edges(
-        "decide",
-        lambda state: "retrieve" if state["needs_search"] else "answer",
-        ["retrieve", "answer"],
-    )
+    builder.add_edge("compact", "retrieve")
     builder.add_edge("retrieve", "answer")
     builder.add_edge("answer", END)
 
