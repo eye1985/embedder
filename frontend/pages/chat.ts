@@ -10,6 +10,18 @@ mountThemeToggle();
 const messages = transcript(must("messages"));
 const input = composer(mustBe("form", HTMLFormElement), ask);
 
+// The model marks each claim with the number of the document it came from so
+// the server can tell which ones the answer actually used. That is all they
+// are for, so they come back out before the reader sees them -- with the space
+// in front, or removing one leaves a gap before the full stop.
+//
+// The whole accumulated answer is stripped on every token rather than each
+// token on arrival: a marker can straddle two of them, and the trailing clause
+// is what keeps a half-arrived one from flashing up as `[1`.
+function withoutMarkers(answer: string): string {
+  return answer.replace(/ ?\[\d+\]/g, "").replace(/ ?\[\d*$/, "");
+}
+
 async function ask(prompt: string): Promise<void> {
   messages.add("user", "You", prompt);
 
@@ -18,17 +30,19 @@ async function ask(prompt: string): Promise<void> {
 
   // Accumulated here rather than read back off the node: textContent is
   // nullable, and one assignment per chunk is cheaper than a read and a write.
+  // The raw text is what accumulates, markers and all -- stripping it here
+  // would mean re-stripping a string the next token appends to anyway.
   let answer = "";
   let failed: string | null = null;
   let finished = false;
 
   try {
     // The answer arrives as `token` events, then one `sources` naming the
-    // documents behind it, then `done`.
+    // documents it cited, then `done`.
     for await (const { event, data } of readEvents(await askChat(prompt))) {
       if (event === "token") {
         answer += (data as { t: string }).t;
-        reply.body.textContent = answer;
+        reply.body.textContent = withoutMarkers(answer);
         messages.scrollToBottom();
       } else if (event === "sources") {
         reply.showSources((data as { sources: Source[] }).sources);

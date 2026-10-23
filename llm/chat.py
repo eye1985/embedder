@@ -80,9 +80,15 @@ CONTEXT_PROMPT = ChatPromptTemplate.from_messages(
             "system",
             (
                 "Answer the question based on the provided context.\n"
-                "Each passage is headed by the document it came from and its "
-                "page, in brackets. Those headers say where the text is "
-                "from; they are not part of it.\n\n"
+                "Each passage is headed by a number in brackets, then the "
+                "document it came from and its page. Those headers say where "
+                "the text is from; they are not part of it.\n"
+                "Put the number of every passage you draw on in brackets "
+                "right after the statement it supports -- '[1]', or '[1][3]' "
+                "where two documents support the same one. Passages from the "
+                "same document share a number.\n"
+                "Cite nothing you did not use: an uncited passage is reported "
+                "to the user as not having contributed to the answer.\n\n"
                 "{context}"
             ),
         ),
@@ -267,7 +273,7 @@ def _search(
 
 
 def _label(user_id: int, documents: list[Document]) -> list[Document]:
-    """Attach each chunk's document title and page.
+    """Attach each chunk's document id, title and page.
 
     Retrieval knows ids and text, so the chunks arrive anonymous: the prompt
     cannot say which document a passage came from, and a question about which
@@ -282,35 +288,63 @@ def _label(user_id: int, documents: list[Document]) -> list[Document]:
     with connection() as conn:
         rows = cited_chunks(conn, user_id, chunk_ids)
 
-    found = {chunk_id: (title, page) for chunk_id, _, title, _, page in rows}
+    found = {
+        chunk_id: (document_id, title, page)
+        for chunk_id, document_id, title, _, page in rows
+    }
     for document in documents:
-        title, page = found.get(str(document.metadata.get("chunk_id")), (None, None))
+        document_id, title, page = found.get(
+            str(document.metadata.get("chunk_id")), (None, None, None)
+        )
+        document.metadata["document_id"] = document_id
         document.metadata["title"] = title
         document.metadata["page"] = page
     return documents
 
 
+def cited_documents(documents: list[Document]) -> list[str]:
+    """The document ids behind the chunks, in the order the prompt numbers them.
+
+    First appearance wins, so a passage marked [1] belongs to the
+    best-ranked document. The caller that reads citations back out of an
+    answer numbers from this same list, which is why it is not private.
+    """
+    order: list[str] = []
+    for document in documents:
+        document_id = document.metadata.get("document_id")
+        if document_id is not None and document_id not in order:
+            order.append(document_id)
+    return order
+
+
 def _format(documents: list[Document]) -> str:
     """The retrieved chunks as the prompt should see them.
 
-    Each passage is headed by where it came from, so the model can attribute
-    a claim and can answer which documents it has. Pages are shifted into the
-    PDF's own numbering, which starts at 1.
+    Each passage is headed by a citation number and where it came from, so
+    the model can attribute a claim, can answer which documents it has, and
+    can say which of them it actually used. The number is per document, not
+    per passage: two passages from one PDF are one source to cite. Pages are
+    shifted into the PDF's own numbering, which starts at 1.
 
     Interpolating the list itself instead hands the model a Python repr --
     row ids, chunk ids, the user id -- which it reads as content and reports
     back as though the ids were documents.
     """
+    numbers = {
+        document_id: number
+        for number, document_id in enumerate(cited_documents(documents), 1)
+    }
     blocks = []
     for document in documents:
         title = document.metadata.get("title")
         page = document.metadata.get("page")
-        if title and page is not None:
-            blocks.append(f"[{title}, p. {page + 1}]\n{document.page_content}")
-        elif title:
-            blocks.append(f"[{title}]\n{document.page_content}")
-        else:
-            blocks.append(document.page_content)
+        number = numbers.get(document.metadata.get("document_id"))
+
+        where = f"{title}, p. {page + 1}" if title and page is not None else title or ""
+        header = f"[{number}] {where}".strip() if number else where
+        blocks.append(
+            f"{header}\n{document.page_content}" if header else document.page_content
+        )
     return "\n\n".join(blocks)
 
 

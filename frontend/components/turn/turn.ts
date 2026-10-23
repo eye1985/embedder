@@ -7,7 +7,7 @@ export type Role = "user" | "assistant" | "error";
 export interface Reply {
   /** What a streaming answer is written into. */
   body: HTMLElement;
-  /** Names the documents behind the answer. An empty list renders nothing. */
+  /** Names the documents the answer cited. An empty list renders nothing. */
   showSources: (sources: Source[]) => void;
   /** Takes the whole turn back out, for a reply that failed. */
   remove: () => void;
@@ -26,8 +26,8 @@ function turn(role: Role, label: string, text: string) {
   return { node, body };
 }
 
-// What the answer was searched against -- not a claim about which of it the
-// model used, which is why the label says searched.
+// The documents the answer cited, which the server works out from the markers
+// the model left in the text -- not everything retrieval turned up.
 //
 // One chip per document on a wrapping row, each carrying the filename the
 // download arrives as. Pages live in the tooltip: ten chunks from one book is
@@ -45,7 +45,7 @@ function sourceList(
   onError: (message: string) => void,
 ): HTMLElement {
   const node = el("div", "turn-sources");
-  node.append(el("span", "turn-sources-label", "Sources searched"));
+  node.append(el("span", "turn-sources-label", "Sources"));
 
   for (const item of items) {
     const name = item.filename ?? item.title ?? "Untitled";
@@ -69,7 +69,7 @@ function sourceList(
     // The name is clipped when long, so the whole of it goes here too.
     chip.title = [
       name,
-      item.pages.length > 0 ? `matched on pages ${item.pages.join(", ")}` : "",
+      item.pages.length > 0 ? `found on pages ${item.pages.join(", ")}` : "",
       item.has_source ? "click to download" : "file no longer stored",
     ]
       .filter((part) => part !== "")

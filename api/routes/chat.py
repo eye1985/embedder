@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 
 from fastapi import APIRouter
 from langchain_core.messages import HumanMessage
@@ -15,7 +16,7 @@ from db.pool import connection
 from db.tables.documents import cited_chunks
 from db.tables.embeddings import search_groups
 from db.tables.registry import get_model
-from llm.chat import build_graph
+from llm.chat import build_graph, cited_documents
 
 logger = logging.getLogger("api")
 
@@ -36,28 +37,46 @@ def sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
-def sources(retrieved: list) -> list[dict]:
-    """The documents behind an answer, one entry each, best-ranked first.
+# A citation the answer carries: the bracketed number of a document in the
+# prompt's context. `[1][3]` is two of them, which is why this matches one at
+# a time rather than a run.
+CITATION = re.compile(r"\[(\d+)\]")
 
-    These are the chunks retrieval returned, which is not the same as the ones
-    the model leaned on -- it says what was searched, not what was quoted.
-    Pages are shifted into the PDF's own numbering, which starts at 1.
+
+def sources(retrieved: list, answer: str) -> list[dict]:
+    """The documents the answer cited, one entry each, best-ranked first.
+
+    Retrieval cannot tell these apart: it returns the ten chunks closest to
+    the question, which is most of the library on a broad question. Only the
+    model knows which of them it leaned on, so it numbers its claims and this
+    reads the numbers back out -- a document it never cited is left out.
+
+    The markers themselves are plumbing and never reach the reader: they are
+    stripped out of the answer in the browser. Pages are every retrieved page
+    of the document, shifted into the PDF's own numbering, which starts at 1 --
+    a marker is per document, so it does not say which passage carried a claim.
 
     `filename` is what the download actually arrives as, which is why it is
     sent alongside the title -- the two differ, the title being the stem.
     """
-    ranked = [str(document.metadata.get("chunk_id")) for document in retrieved]
-    if not ranked:
+    cited = {int(number) for number in CITATION.findall(answer)}
+    numbered = {
+        document_id: number
+        for number, document_id in enumerate(cited_documents(retrieved), 1)
+        if number in cited
+    }
+    if not numbered:
         return []
 
+    chunk_ids = [str(document.metadata.get("chunk_id")) for document in retrieved]
     with connection() as conn:
-        rows = cited_chunks(conn, CURRENT_USER_ID, ranked)
+        rows = cited_chunks(conn, CURRENT_USER_ID, chunk_ids)
 
-    rank = {chunk_id: index for index, chunk_id in enumerate(ranked)}
-    last = len(ranked)
     found: dict[str, dict] = {}
 
-    for chunk_id, document_id, title, source_uri, page in rows:
+    for _chunk_id, document_id, title, source_uri, page in rows:
+        if document_id not in numbered:
+            continue
         # Resolved against the disk, not just the column: a file deleted from
         # under its row would otherwise be offered as a link that 404s.
         stored = source_path(source_uri)
@@ -68,10 +87,8 @@ def sources(retrieved: list) -> list[dict]:
                 "filename": stored.name if stored else None,
                 "pages": set(),
                 "has_source": stored is not None,
-                "rank": last,
             },
         )
-        source["rank"] = min(source["rank"], rank.get(chunk_id, last))
         if page is not None:
             source["pages"].add(page + 1)
 
@@ -84,7 +101,7 @@ def sources(retrieved: list) -> list[dict]:
             "has_source": source["has_source"],
         }
         for document_id, source in sorted(
-            found.items(), key=lambda item: item[1]["rank"]
+            found.items(), key=lambda item: numbered[item[0]]
         )
     ]
 
@@ -101,9 +118,9 @@ def chat(prompt: Chat):
     effect on the next question, not the next restart.
 
     The body is an event stream: a `token` per piece of the answer, then
-    `sources` naming the documents it was searched against, then `done`.
-    Not every question is searched -- the graph decides -- and one that was
-    not sends an empty `sources`.
+    `sources` naming the documents the answer cited, then `done`. Not every
+    question is searched -- the graph decides -- and one that was not, or one
+    answered without leaning on anything retrieved, sends an empty `sources`.
     """
     with connection() as conn:
         groups = {
@@ -131,11 +148,16 @@ def chat(prompt: Chat):
                     yield sse("token", {"t": chunk.text})
 
             # The chunks the answer was built from live in the graph's state,
-            # which is only final once the stream is done.
+            # which is only final once the stream is done. The answer is read
+            # back from there too rather than accumulated here -- the same
+            # text, and the citations have to be matched against all of it.
             state = await graph.aget_state(config)
+            answer = state.values["messages"][-1].text
             # Off the loop: resolving chunks to documents is a blocking query,
             # and this generator runs on the event loop.
-            resolved = await run_in_threadpool(sources, state.values.get("context", []))
+            resolved = await run_in_threadpool(
+                sources, state.values.get("context", []), answer
+            )
             yield sse("sources", {"sources": resolved})
         except Exception:
             logger.exception("chat stream failed")

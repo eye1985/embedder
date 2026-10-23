@@ -20,8 +20,8 @@ export const readUploadStatus = () =>
 
 export const askChat = (prompt: string) => postStream("/api/chat", { prompt });
 
-// One document a chat answer was searched against. Not generated from the
-// schema: it arrives inside the event stream, which FastAPI does not describe.
+// One document a chat answer cited. Not generated from the schema: it arrives
+// inside the event stream, which FastAPI does not describe.
 export interface Source {
   document_id: string;
   title: string | null;
