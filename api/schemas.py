@@ -75,19 +75,56 @@ class DeleteDocumentResult(BaseModel):
     deleted_file: bool
 
 
-class LastUpload(BaseModel):
-    filename: str | None
-    result: ImportResult | None
+# A job's result is whichever shape its work returned: an upload reports an
+# ImportResult, a re-embed an EmbedResult. They overlap on what both pages
+# read, and `search_model` tells them apart.
+JobResult = ImportResult | EmbedResult
+
+
+class LastJob(BaseModel):
+    kind: str
+    subject: str
+    result: JobResult | None
     error: str | None
     finished_seconds_ago: float
 
 
-class UploadStatus(BaseModel):
+class JobStatus(BaseModel):
     active: bool
-    filename: str | None
+    kind: str | None
+    subject: str | None
     models: list[str] | None
     elapsed_seconds: float | None
-    last: LastUpload | None
+    last: LastJob | None
+
+
+class JobOut(BaseModel):
+    job_id: int
+    kind: str
+    subject: str
+    models: list[str]
+    status: str
+    source_uri: str | None
+    document_id: uuid.UUID | None
+    result: JobResult | None
+    error: str | None
+    started_at: str
+    finished_at: str | None
+    elapsed_seconds: float
+    can_rerun: bool
+
+
+class RerunResult(BaseModel):
+    job_id: int
+    document_id: uuid.UUID
+    source_uri: str | None
+    embedded: dict[str, int]
+    chunks: int
+
+
+class DeleteJobResult(BaseModel):
+    job_id: int
+    deleted: bool
 
 
 class SearchableResult(BaseModel):

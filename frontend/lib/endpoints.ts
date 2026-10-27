@@ -5,7 +5,8 @@ type Schemas = components["schemas"];
 
 export type DocumentOut = Schemas["DocumentOut"];
 export type ModelOut = Schemas["ModelOut"];
-export type UploadStatusOut = Schemas["UploadStatus"];
+export type JobStatusOut = Schemas["JobStatus"];
+export type JobOut = Schemas["JobOut"];
 export type ImportResult = Schemas["ImportResult"];
 
 // Every API URL the frontend knows, in one place and typed from the schema
@@ -15,8 +16,16 @@ export const listDocuments = () => getJSON<DocumentOut[]>("/api/documents");
 
 export const listModels = () => getJSON<ModelOut[]>("/api/models");
 
-export const readUploadStatus = () =>
-  getJSON<UploadStatusOut>("/api/upload/status");
+// One slot for uploads and re-embeds both, so this answers for either.
+export const readJobStatus = () => getJSON<JobStatusOut>("/api/jobs/current");
+
+export const listJobs = () => getJSON<JobOut[]>("/api/jobs");
+
+export const rerunJob = (id: number) =>
+  send<Schemas["RerunResult"]>(`/api/jobs/${id}/rerun`, "POST");
+
+export const deleteJob = (id: number) =>
+  send<Schemas["DeleteJobResult"]>(`/api/jobs/${id}`, "DELETE");
 
 export const askChat = (prompt: string) => postStream("/api/chat", { prompt });
 
@@ -46,6 +55,13 @@ export const setSearchModel = (id: string, table: string) =>
     "PUT",
   );
 
+// Embeds chunks that are already stored, so no PDF is read again. Holds the
+// same one-job-per-user slot an upload does, so this 409s while one runs.
+export const embedExisting = (id: string, models: string[]) =>
+  send<Schemas["EmbedResult"]>(`/api/documents/${id}/embeddings`, "POST", {
+    models,
+  });
+
 export const deleteDocument = (id: string) =>
   send<Schemas["DeleteDocumentResult"]>(`/api/documents/${id}`, "DELETE");
 
@@ -57,3 +73,4 @@ export const documentExportHref = (id: string) =>
   `/api/documents/${id}/embeddings`;
 export const documentSourceHref = (id: string) => `/api/documents/${id}/source`;
 export const documentsPageHref = "/documents";
+export const jobsPageHref = "/jobs";

@@ -64,6 +64,66 @@ Python reloads itself; the frontend does not. `npm run dev:api` sets
 Run `npm run api-types` after changing any response model, so a renamed field
 fails `npm run build` instead of reaching the browser.
 
+## Tests
+
+```bash
+uv run pytest
+```
+
+Integration tests, grouped by feature. They need Docker's Postgres running and
+nothing else -- no OpenAI key, and no network.
+
+```
+test/
+  conftest.py       Test database, migrations, truncation, the fake embedder.
+  fakes.py          Deterministic unit-vector embedder. No test reaches OpenAI.
+  factories.py      a_document(), a_job(), and the readers tests assert on.
+  integration/
+    jobs/             One job at a time, and what happens when one dies.
+      concurrency/      The rule: an upload and a re-embed refuse each other.
+        test_mutual_exclusion.py   Both directions, enforced by the index.
+        test_slot_release.py       Handed back on success and on failure.
+      recovery/         A job whose process died, and the way back.
+        test_startup_sweep.py      Status corrected, data kept, slot freed.
+        test_replay_plan.py        What re-running would mean. Four answers.
+        test_rerun.py              The repair endpoint.
+      page/             What /jobs reads and what its buttons do.
+        test_listing.py            Order, and whether Re-run is offered.
+        test_current_job.py        What is in flight, and the last outcome.
+        test_deleting.py           Pruning history vs freeing a stuck slot.
+    re_embedding/     A stored document gaining a model it lacks.
+      test_adding_a_model.py     The feature, and retrieval left alone.
+      test_idempotency.py        A repeat writes nothing and duplicates nothing.
+      test_stored_chunks.py      Chunks are the input; the PDF is never reread.
+      test_refusals.py           No vector table, and someone else's document.
+```
+
+Run one feature's tests with `uv run pytest test/integration/jobs`, or one
+facet with `uv run pytest test/integration/jobs/recovery`.
+
+They are integration rather than unit tests because what they check lives in
+Postgres: one job at a time is a partial unique index, idempotent embedding is
+a `NOT EXISTS` plus a unique constraint, and restart recovery is an UPDATE.
+Mocking psycopg would assert that the code called `insert`, which would still
+pass with the index dropped.
+
+Two things keep that safe and free, both in `test/conftest.py`:
+
+- Their own database, `embeddings_test`, created and migrated by a fixture.
+  A run never touches development data. Override the name with
+  `TEST_DATABASE_NAME`.
+- A fake embedding service (`test/fakes.py`) that returns deterministic
+  unit vectors at the model's width. It is installed session-wide and
+  autouse, so no test can reach OpenAI by accident -- but the real
+  PGVectorStore still does the writing, so the foreign keys, the unique
+  constraint on `chunk_id` and the `halfvec` column are genuinely exercised.
+
+Tables are truncated between tests rather than wrapped in a rolled-back
+transaction, and that is forced by the design under test: `begin_job` claims
+the slot on its own connection and commits, so a running job is visible to
+other requests. A test holding everything in one transaction could not see
+those rows.
+
 ## Schema
 
 ```bash
@@ -104,16 +164,15 @@ that.
 
 ## API
 
-Three pages, all scoped to `CURRENT_USER_ID` until there is real auth: `/`
-(chat), `/upload`, `/documents`. The JSON API is prefixed with `/api` so a route
-can never collide with a page.
+Four pages, all scoped to `CURRENT_USER_ID` until there is real auth: `/`
+(chat), `/upload`, `/documents`, `/jobs`. The JSON API is prefixed with `/api`
+so a route can never collide with a page.
 
 | method | route | purpose |
 | ------ | ----- | ------- |
 | `POST` | `/api/chat` | Stream an answer, then its sources. |
 | `GET` | `/api/models` | Registered models, for the upload picker. |
 | `POST` | `/api/upload` | Store a PDF, chunk it, embed it. |
-| `GET` | `/api/upload/status` | Whether an upload is running, and its outcome. |
 | `GET` | `/api/documents` | List documents with chunk and vector counts. |
 | `PATCH` | `/api/documents/{id}` | Take a document in or out of search. |
 | `DELETE` | `/api/documents/{id}` | Delete the document, its vectors and its PDF. |
@@ -123,6 +182,10 @@ can never collide with a page.
 | `DELETE` | `/api/documents/{id}/embeddings` | Delete vectors, keep the chunks. |
 | `PUT` | `/api/documents/{id}/search-model/{table}` | Choose which model retrieves it. |
 | `GET` | `/api/embeddings` | Download every document as a zip. |
+| `GET` | `/api/jobs/current` | Whether a job is running, and the last outcome. |
+| `GET` | `/api/jobs` | Every job, newest first, with what it wrote. |
+| `POST` | `/api/jobs/{id}/rerun` | Run a finished or interrupted job again. |
+| `DELETE` | `/api/jobs/{id}` | Forget a job row, freeing a stuck slot. |
 
 ```bash
 # upload -- `models` is repeatable; omitted, the user's default model is used
@@ -130,7 +193,8 @@ curl -X POST http://localhost:8000/api/upload \
   -F 'file=@sample/storybook.pdf' \
   -F 'models=emb_openai_te3_small'
 
-curl http://localhost:8000/api/upload/status
+curl http://localhost:8000/api/jobs/current
+curl http://localhost:8000/api/jobs
 curl http://localhost:8000/api/documents
 curl -OJ http://localhost:8000/api/documents/<id>/embeddings
 curl -OJ http://localhost:8000/api/documents/<id>/source
@@ -144,11 +208,28 @@ curl -X PUT http://localhost:8000/api/documents/<id>/search-model/emb_qwen3_0_6b
 
 curl -X DELETE http://localhost:8000/api/documents/<id>
 curl -X DELETE 'http://localhost:8000/api/documents/<id>/embeddings?model=emb_qwen3_0_6b'
+
+curl -X POST http://localhost:8000/api/jobs/<job-id>/rerun
+curl -X DELETE http://localhost:8000/api/jobs/<job-id>
 ```
 
-One upload at a time per user -- a second returns 409. An upload outlives the
-page that started it, so `GET /api/upload/status` is how a reloaded page finds
-its way back. A filename already taken is refused, not overwritten.
+One job at a time per user, across uploads and re-embeds both: a second of
+either returns 409, enforced by a partial unique index rather than by
+application code. A job outlives the page that started it, so
+`GET /api/jobs/current` is how a reloaded page finds its way back. A filename
+already taken is refused, not overwritten.
+
+`POST /api/documents/{id}/embeddings` is how a document gains a model it was
+not uploaded with. Chunks are stored once and are model-independent, so nothing
+is re-extracted and chunks a model already holds are skipped -- which also
+makes it the repair path for a job that died midway. Which model *searches* the
+document does not move; that stays a separate choice on the documents page.
+
+A crash leaves a job row marked running with nothing alive to correct it.
+Startup marks those `interrupted` and keeps what they wrote; `/jobs` is where
+they are re-run, or deleted if the slot is stuck. Deleting a row that is
+genuinely still running frees the slot but does not stop the work -- nothing
+running reads that row.
 
 These routes spend against your OpenAI key and have no auth. Gate them before
 deploying.
@@ -176,7 +257,7 @@ rather than re-extracted.
 ```
 api/            Speaks HTTP. No SQL, no export format, no pipeline.
   routes/       One router per resource, composed in routes/__init__.py.
-  services/     The work behind the routes. uploads.py owns the upload_jobs SQL.
+  services/     The work behind the routes. jobs.py owns the one-at-a-time slot.
   config.py     CURRENT_USER_ID and the frontend directories.
   schemas.py    Response models. What the generated frontend types come from.
   assets.py     Resolves a frontend entry to built URLs via the Vite manifest.
@@ -191,6 +272,7 @@ llm/chat.py     Builds the retrieval chain for one user.
 export.py       One document as JSON, a library as a zip. No SQL, no HTTP.
 paths.py        PROJECT_ROOT, which every stored source_uri is relative to.
 sql/            Migrations. Vector-table DDL is in db/setup.py.
+test/           Fixtures, fakes and builders; integration/ is one dir per feature.
 templates/      Jinja2 page shells. base.html holds the only copy of the nav.
 frontend/       styles/, components/, lib/, pages/, main.css. Built into static/.
 static/         Build output. Git-ignored; npm run build recreates it.

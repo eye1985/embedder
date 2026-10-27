@@ -1,7 +1,8 @@
 """Accepting a PDF and running it through the import pipeline.
 
-The job bookkeeping is `api/services/uploads.py`; the pipeline is `indexing/pdf.py`.
-What is here is the request around them, and the cleanup when it fails.
+The job bookkeeping is `api/services/jobs.py`, the file handling
+`api/services/uploads.py`, and the pipeline `indexing/pdf.py`. What is here is
+the request around them, and the cleanup when it fails.
 """
 
 import logging
@@ -10,16 +11,15 @@ from typing import Annotated
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 
 from api.config import CURRENT_USER_ID
+from api.routes.jobs import slot_conflict
 from api.routes.models import models_for, search_model_for
-from api.schemas import ImportResult, UploadStatus
+from api.schemas import ImportResult
 from api.services.documents import delete_document
+from api.services.jobs import begin_job, finish_job
 from api.services.uploads import (
-    begin_upload,
-    finish_upload,
     save_upload,
     upload_filename,
     upload_source_uri,
-    upload_status,
 )
 from db.pool import connection
 from db.tables.documents import find_document
@@ -88,15 +88,18 @@ def upload_endpoint(
     """
     name = upload_filename(file)
 
-    job_id, running = begin_upload(CURRENT_USER_ID, name, models or [])
+    job_id, running = begin_job(
+        CURRENT_USER_ID,
+        "upload",
+        name,
+        models or [],
+        source_uri=upload_source_uri(name),
+    )
     if running is not None:
-        # Claimed before the file is read, so a second upload is turned away
-        # without spending time on its body.
-        raise HTTPException(
-            409,
-            f"An upload is already in progress ({running['filename']}). "
-            f"Wait for it to finish before starting another.",
-        )
+        # Claimed before the file is read, so a second job is turned away
+        # without spending time on its body. A re-embed holds the same slot,
+        # so it turns an upload away too.
+        raise slot_conflict(running)
 
     try:
         with connection() as conn:
@@ -134,26 +137,13 @@ def upload_endpoint(
                     f"Embedding failed ({type(exc).__name__}). Nothing was stored.",
                 ) from exc
 
-        finish_upload(job_id, result=result)
+        finish_job(job_id, result=result)
         return result
     except HTTPException as exc:
         # Recorded, not just raised: the client that started this may already
         # be gone, and a reloaded page reads the outcome from here.
-        finish_upload(job_id, error=str(exc.detail))
+        finish_job(job_id, error=str(exc.detail))
         raise
     except Exception as exc:
-        finish_upload(job_id, error=f"Internal error ({type(exc).__name__}).")
+        finish_job(job_id, error=f"Internal error ({type(exc).__name__}).")
         raise
-
-
-# Sync `def` for the same reason as the endpoint above: psycopg blocks, so
-# FastAPI runs this in a worker thread rather than stalling the event loop.
-@router.get("/upload/status", response_model=UploadStatus)
-def upload_status_endpoint():
-    """Whether an upload is running, and the outcome of the last one.
-
-    The upload request itself can outlive the page that started it -- a sync
-    endpoint runs in a thread that no client disconnect can cancel -- so this
-    is how a reloaded page finds out it is still waiting, and what happened.
-    """
-    return upload_status(CURRENT_USER_ID)

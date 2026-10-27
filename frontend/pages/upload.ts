@@ -1,4 +1,4 @@
-import { readUploadStatus, uploadPdf } from "../lib/endpoints";
+import { readJobStatus, uploadPdf } from "../lib/endpoints";
 import { must, mustBe } from "../lib/dom";
 import { mountThemeToggle } from "../components/theme-toggle/theme-toggle";
 import { dropzone } from "../components/dropzone/dropzone";
@@ -7,9 +7,10 @@ import { uploadStatus } from "../components/upload-status/upload-status";
 
 mountThemeToggle();
 
-// An upload outlives the page that started it, so the server is asked how it
-// is going rather than the page tracking it locally -- a reload would lose
-// anything held here.
+// A job outlives the page that started it, so the server is asked how it is
+// going rather than the page tracking it locally -- a reload would lose
+// anything held here. The slot is shared with re-embeds, so what comes back
+// is not necessarily this page's work.
 const POLL_MS = 1500;
 
 const form = mustBe("form", HTMLFormElement);
@@ -69,15 +70,21 @@ function refreshStatus(): void {
   void (async () => {
     let state;
     try {
-      state = await readUploadStatus();
+      state = await readJobStatus();
     } catch {
       // A blip in polling should not tear down the progress view.
       return;
     }
 
     if (state.active) {
+      // Busy either way: the slot is one per user, so a re-embed started from
+      // the jobs page blocks an upload exactly as another upload would.
       setBusy(true);
-      status.progress(state.filename ?? "your file", state.elapsed_seconds);
+      status.progress(
+        state.subject ?? "your file",
+        state.elapsed_seconds,
+        state.kind ?? "upload",
+      );
       startPolling();
       return;
     }
@@ -91,12 +98,20 @@ function refreshStatus(): void {
       if (wasWatching) status.clear();
       return;
     }
-    // Render the outcome when this page was watching the upload, and also on a
+    // Render the outcome when this page was watching the job, and also on a
     // cold load that lands just after one ended -- the case where a reload
     // happens a second too late to see it running.
     if (wasWatching || last.finished_seconds_ago <= 15) {
-      if (last.result) status.report(last.result);
-      else if (last.error) status.error(last.error);
+      // `search_model` is what an import reports and a re-embed does not, so
+      // it is how the two results are told apart. A re-embed's outcome belongs
+      // on the jobs page, not under the upload form.
+      if (last.result && "search_model" in last.result) {
+        status.report(last.result);
+      } else if (last.error && last.kind === "upload") {
+        status.error(last.error);
+      } else {
+        status.clear();
+      }
     }
   })();
 }
@@ -114,7 +129,7 @@ form.addEventListener("submit", (event) => {
   if (searched) body.append("search_model", searched);
 
   setBusy(true);
-  status.progress(picked.name, 0);
+  status.progress(picked.name, 0, "upload");
   startPolling();
 
   void (async () => {

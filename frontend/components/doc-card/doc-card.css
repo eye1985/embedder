@@ -71,3 +71,46 @@
 .doc.off .chips {
   opacity: 0.45;
 }
+
+/* Models that could still embed this document. Dashed rather than solid so
+   the row reads as "not here yet", against the solid chips above it which are
+   embeddings that exist. */
+.doc-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.doc-add-label {
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.11em;
+  color: var(--fg-3);
+  margin-right: var(--sp-1);
+}
+
+.chip-button {
+  gap: var(--sp-1);
+  padding: 4px 9px;
+  font-size: var(--fs-tiny);
+  font-weight: 500;
+  color: var(--fg-2);
+  background: var(--surface);
+  border: 1px dashed var(--rule-strong);
+  border-radius: var(--r-sm);
+}
+
+.chip-button::before {
+  content: "+";
+  font-weight: 600;
+  color: var(--fg-3);
+}
+
+.chip-button:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--highlight-soft);
+  border-style: solid;
+  border-color: var(--highlight);
+}

@@ -14,7 +14,7 @@ from starlette.responses import JSONResponse, Response
 from api.assets import AssetsNotBuilt
 from api.config import STATIC_DIR
 from api.routes import api_router, pages_router
-from api.services.uploads import sweep_running_uploads
+from api.services.jobs import sweep_running_jobs
 from db.pool import close_pool, connection, get_pool
 from db.vectors import close_engines
 
@@ -27,14 +27,15 @@ async def lifespan(app: FastAPI):
     # database fails at startup instead of under traffic.
     get_pool()
 
-    # Nothing can still be uploading at startup, so a job still marked running
+    # Nothing can still be running at startup, so a job still marked running
     # belongs to a process that is gone. Left alone it would hold the
-    # one-upload-per-user index forever and lock that user out.
+    # one-job-per-user index forever and lock that user out. What it half-wrote
+    # is kept -- re-running it from the jobs page finishes the work.
     with connection() as conn:
-        swept = sweep_running_uploads(conn)
+        swept = sweep_running_jobs(conn)
     if swept:
         logger.warning(
-            "cleared %d upload(s) interrupted by a restart: %s",
+            "marked %d job(s) interrupted by a restart: %s",
             len(swept),
             ", ".join(swept),
         )

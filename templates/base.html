@@ -30,7 +30,7 @@
         </div>
         {# The only copy of the nav: adding a page is one entry here. #}
         <nav class="nav">
-          {%- for href, label in [("/", "Chat"), ("/upload", "Upload"), ("/documents", "Documents")] %}
+          {%- for href, label in [("/", "Chat"), ("/upload", "Upload"), ("/documents", "Documents"), ("/jobs", "Jobs")] %}
           <a href="{{ href }}"{% if href == current %} class="current"{% endif %}>{{ label }}</a>
           {%- endfor %}
         </nav>

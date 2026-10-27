@@ -1,6 +1,6 @@
 """The HTML page shells.
 
-Three routes, one per page, each rendering the same shell with a different
+Four routes, one per page, each rendering the same shell with a different
 template and nav entry. No data: every page fetches what it needs from the
 JSON API once its script runs.
 """
@@ -62,3 +62,8 @@ def documents_page(request: Request):
     return render_page(
         request, "documents.html", "Documents", "Documents", "/documents"
     )
+
+
+@router.get("/jobs")
+def jobs_page(request: Request):
+    return render_page(request, "jobs.html", "Jobs", "Jobs", "/jobs")

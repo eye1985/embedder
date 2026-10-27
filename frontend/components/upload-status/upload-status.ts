@@ -6,7 +6,7 @@ import { chip, chipRow } from "../chips/chips";
 import { errorBox } from "../error-box/error-box";
 
 export interface UploadStatusView {
-  progress: (filename: string, elapsed: number | null) => void;
+  progress: (subject: string, elapsed: number | null, kind: string) => void;
   report: (result: ImportResult) => void;
   error: (message: string) => void;
   clear: () => void;
@@ -17,9 +17,10 @@ export interface UploadStatusView {
 // page, because an upload outlives the page that started it.
 export function uploadStatus(node: HTMLElement): UploadStatusView {
   return {
-    progress(filename, elapsed) {
+    progress(subject, elapsed, kind) {
       const card = el("article", "card progress");
-      card.append(el("h2", "card-title", `Embedding ${filename}…`));
+      const verb = kind === "upload" ? "Embedding" : "Re-embedding";
+      card.append(el("h2", "card-title", `${verb} ${subject}…`));
 
       const meta = el("p", "card-meta");
       meta.append(
@@ -35,8 +36,11 @@ export function uploadStatus(node: HTMLElement): UploadStatusView {
         el(
           "p",
           "note",
-          "This runs on the server. You can reload or close this page — the " +
-            "upload keeps going and will show up under Documents.",
+          kind === "upload"
+            ? "This runs on the server. You can reload or close this page — " +
+                "the upload keeps going and will show up under Documents."
+            : "A re-embed is using the job slot, so an upload has to wait for " +
+                "it. Follow it under Jobs.",
         ),
       );
       node.replaceChildren(card);

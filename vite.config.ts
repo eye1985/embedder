@@ -27,6 +27,7 @@ export default defineConfig({
         chat: here("frontend/pages/chat.ts"),
         documents: here("frontend/pages/documents.ts"),
         upload: here("frontend/pages/upload.ts"),
+        jobs: here("frontend/pages/jobs.ts"),
       },
     },
   },

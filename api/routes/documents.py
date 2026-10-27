@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from starlette.responses import FileResponse, JSONResponse, Response
 
 from api.config import CURRENT_USER_ID
+from api.routes.jobs import slot_conflict
 from api.routes.models import models_for
 from api.schemas import (
     DeleteDocumentResult,
@@ -29,6 +30,7 @@ from api.services.documents import (
     export_document,
     list_documents,
 )
+from api.services.jobs import begin_job, finish_job
 from api.services.sources import source_path
 from db.pool import connection
 from db.tables.documents import get_document, set_searchable
@@ -160,15 +162,54 @@ def embed_document_endpoint(document_id: uuid.UUID, body: ReEmbed):
     """Embed an existing document with one or more models.
 
     How a document gains a model it was not uploaded with, and how one emptied
-    by DELETE gets its vectors back. Chunks a model already holds are skipped,
-    so repeating this costs nothing.
+    by DELETE gets its vectors back. The chunks are already stored and are
+    model-independent, so nothing is extracted again; chunks a model already
+    holds are skipped, so repeating this costs nothing.
+
+    Which model the document is *searched* with does not move: `mark_embedded`
+    enables a new pairing only when the document has none, so adding a model
+    never changes answers under the user. The documents page is where that
+    choice is made.
+
+    This holds the same one-job-per-user slot as /upload, so a re-embed and an
+    upload turn each other away rather than both spending the embedding API.
     """
     with connection() as conn:
-        models = models_for(conn, body.models)
         try:
-            return embed_existing(conn, CURRENT_USER_ID, document_id, models)
+            _, _, title, source_uri, _ = get_document(
+                conn, CURRENT_USER_ID, document_id
+            )
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
+        models = models_for(conn, body.models)
+
+    job_id, running = begin_job(
+        CURRENT_USER_ID,
+        "embed",
+        title or source_uri or str(document_id),
+        [m.table_name for m in models],
+        source_uri=source_uri,
+        document_id=document_id,
+    )
+    if running is not None:
+        raise slot_conflict(running)
+
+    try:
+        with connection() as conn:
+            try:
+                result = embed_existing(conn, CURRENT_USER_ID, document_id, models)
+            except LookupError as exc:
+                raise HTTPException(404, str(exc)) from exc
+        finish_job(job_id, result=result)
+        return result
+    except HTTPException as exc:
+        # Recorded, not just raised: the client may already be gone, and the
+        # jobs page reads the outcome from here.
+        finish_job(job_id, error=str(exc.detail))
+        raise
+    except Exception as exc:
+        finish_job(job_id, error=f"Embedding failed ({type(exc).__name__}).")
+        raise
 
 
 @router.delete("/documents/{document_id}", response_model=DeleteDocumentResult)

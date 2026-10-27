@@ -24,5 +24,15 @@ dependencies = [
 [dependency-groups]
 dev = [
     "mlx-vlm>=0.6.4",
+    "pytest>=9.1.1",
     "ruff>=0.16.5",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+# The project is run from its root, not installed, so `db`, `api` and `test`
+# are only importable with the root on the path.
+pythonpath = ["."]
+# Integration tests need Postgres. They run against their own database so a
+# run never touches development data -- see test/conftest.py.
+addopts = "-q --strict-markers"

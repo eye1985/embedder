@@ -22,7 +22,10 @@ export interface paths {
          *     effect on the next question, not the next restart.
          *
          *     The body is an event stream: a `token` per piece of the answer, then
-         *     `sources` naming the documents it was searched against, then `done`.
+         *     `sources` naming the documents the answer cited, then `done`. Every
+         *     question is searched, so an empty `sources` means the answer leaned on
+         *     nothing retrieved -- the passages did not cover the question, or the user
+         *     has nothing searchable.
          */
         post: operations["chat_api_chat_post"];
         delete?: never;
@@ -94,30 +97,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/upload/status": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Upload Status Endpoint
-         * @description Whether an upload is running, and the outcome of the last one.
-         *
-         *     The upload request itself can outlive the page that started it -- a sync
-         *     endpoint runs in a thread that no client disconnect can cancel -- so this
-         *     is how a reloaded page finds out it is still waiting, and what happened.
-         */
-        get: operations["upload_status_endpoint_api_upload_status_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/documents": {
         parameters: {
             query?: never;
@@ -160,8 +139,17 @@ export interface paths {
          * @description Embed an existing document with one or more models.
          *
          *     How a document gains a model it was not uploaded with, and how one emptied
-         *     by DELETE gets its vectors back. Chunks a model already holds are skipped,
-         *     so repeating this costs nothing.
+         *     by DELETE gets its vectors back. The chunks are already stored and are
+         *     model-independent, so nothing is extracted again; chunks a model already
+         *     holds are skipped, so repeating this costs nothing.
+         *
+         *     Which model the document is *searched* with does not move: `mark_embedded`
+         *     enables a new pairing only when the document has none, so adding a model
+         *     never changes answers under the user. The documents page is where that
+         *     choice is made.
+         *
+         *     This holds the same one-job-per-user slot as /upload, so a re-embed and an
+         *     upload turn each other away rather than both spending the embedding API.
          */
         post: operations["embed_document_endpoint_api_documents__document_id__embeddings_post"];
         /**
@@ -280,6 +268,102 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/jobs/current": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Current Job Endpoint
+         * @description Whether a job is running, and the outcome of the last one.
+         *
+         *     A job outlives the page that started it -- a sync endpoint runs in a thread
+         *     no client disconnect can cancel -- so this is how a reloaded page finds out
+         *     it is still waiting, and what happened.
+         */
+        get: operations["current_job_endpoint_api_jobs_current_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Jobs Endpoint
+         * @description The user's jobs, newest first.
+         */
+        get: operations["list_jobs_endpoint_api_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/rerun": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Rerun Job Endpoint
+         * @description Run a finished or interrupted job again.
+         *
+         *     This is the repair path for a crash. Embedding skips chunks a model already
+         *     holds, so re-running costs only the work that did not land -- and re-running
+         *     a job that succeeded embeds nothing at all.
+         *
+         *     A new row is written rather than the old one reused: what happened stays in
+         *     the history, and the slot is claimed the same way any other job claims it.
+         */
+        post: operations["rerun_job_endpoint_api_jobs__job_id__rerun_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Job Endpoint
+         * @description Forget a job row.
+         *
+         *     Allowed on a running one, because that is the only way back from a row left
+         *     behind by a process that died: the index would otherwise hold the slot
+         *     forever. It does not stop work that is genuinely still going -- nothing
+         *     running reads this row -- so the page warns before asking.
+         */
+        delete: operations["delete_job_endpoint_api_jobs__job_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -335,6 +419,13 @@ export interface components {
             };
             /** Chunks Kept */
             chunks_kept: number;
+        };
+        /** DeleteJobResult */
+        DeleteJobResult: {
+            /** Job Id */
+            job_id: number;
+            /** Deleted */
+            deleted: boolean;
         };
         /** DocumentOut */
         DocumentOut: {
@@ -403,11 +494,57 @@ export interface components {
             /** Search Model */
             search_model: string;
         };
-        /** LastUpload */
-        LastUpload: {
-            /** Filename */
-            filename: string | null;
-            result: components["schemas"]["ImportResult"] | null;
+        /** JobOut */
+        JobOut: {
+            /** Job Id */
+            job_id: number;
+            /** Kind */
+            kind: string;
+            /** Subject */
+            subject: string;
+            /** Models */
+            models: string[];
+            /** Status */
+            status: string;
+            /** Source Uri */
+            source_uri: string | null;
+            /** Document Id */
+            document_id: string | null;
+            /** Result */
+            result: components["schemas"]["ImportResult"] | components["schemas"]["EmbedResult"] | null;
+            /** Error */
+            error: string | null;
+            /** Started At */
+            started_at: string;
+            /** Finished At */
+            finished_at: string | null;
+            /** Elapsed Seconds */
+            elapsed_seconds: number;
+            /** Can Rerun */
+            can_rerun: boolean;
+        };
+        /** JobStatus */
+        JobStatus: {
+            /** Active */
+            active: boolean;
+            /** Kind */
+            kind: string | null;
+            /** Subject */
+            subject: string | null;
+            /** Models */
+            models: string[] | null;
+            /** Elapsed Seconds */
+            elapsed_seconds: number | null;
+            last: components["schemas"]["LastJob"] | null;
+        };
+        /** LastJob */
+        LastJob: {
+            /** Kind */
+            kind: string;
+            /** Subject */
+            subject: string;
+            /** Result */
+            result: components["schemas"]["ImportResult"] | components["schemas"]["EmbedResult"] | null;
             /** Error */
             error: string | null;
             /** Finished Seconds Ago */
@@ -437,6 +574,24 @@ export interface components {
             /** Models */
             models?: string[] | null;
         };
+        /** RerunResult */
+        RerunResult: {
+            /** Job Id */
+            job_id: number;
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Source Uri */
+            source_uri: string | null;
+            /** Embedded */
+            embedded: {
+                [key: string]: number;
+            };
+            /** Chunks */
+            chunks: number;
+        };
         /** SearchModelResult */
         SearchModelResult: {
             /**
@@ -461,18 +616,6 @@ export interface components {
             document_id: string;
             /** Searchable */
             searchable: boolean;
-        };
-        /** UploadStatus */
-        UploadStatus: {
-            /** Active */
-            active: boolean;
-            /** Filename */
-            filename: string | null;
-            /** Models */
-            models: string[] | null;
-            /** Elapsed Seconds */
-            elapsed_seconds: number | null;
-            last: components["schemas"]["LastUpload"] | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -578,26 +721,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    upload_status_endpoint_api_upload_status_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["UploadStatus"];
                 };
             };
         };
@@ -857,6 +980,108 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SearchModelResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    current_job_endpoint_api_jobs_current_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobStatus"];
+                };
+            };
+        };
+    };
+    list_jobs_endpoint_api_jobs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobOut"][];
+                };
+            };
+        };
+    };
+    rerun_job_endpoint_api_jobs__job_id__rerun_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RerunResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_job_endpoint_api_jobs__job_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteJobResult"];
                 };
             };
             /** @description Validation Error */
