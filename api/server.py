@@ -5,6 +5,7 @@ No endpoints live here. They are in `api/routes/`, included at the bottom.
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -50,28 +51,35 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-class NoCacheStaticFiles(StaticFiles):
-    """Static files the browser has to revalidate before reusing.
+# One year, the conventional maximum. `immutable` also stops a reload from
+# revalidating, which is the point of a hashed filename.
+IMMUTABLE = "public, max-age=31536000, immutable"
+
+
+class BuiltStaticFiles(StaticFiles):
+    """Hashed build output cached hard, everything else revalidated.
 
     Starlette sends `etag` and `last-modified` but no `Cache-Control`, which
-    leaves the browser free to reuse a cached copy without asking. An edited
-    page or script then keeps running the old version until a hard reload --
-    and `--reload` restarting the server does nothing about it.
+    leaves the browser free to reuse a cached copy without asking. Vite writes
+    `assets/` under content-hashed filenames, so changed bytes mean a changed
+    URL and a stale copy is never requested.
 
-    `no-cache` means "revalidate", not "do not store": an unchanged file still
-    comes back 304 with no body. The header is set after the parent has
-    already decided between 200 and 304, so it lands on both.
+    Anything unhashed gets `no-cache` -- "revalidate", not "do not store": an
+    unchanged file still comes back 304 with no body, but an edit cannot keep
+    being served from the cache. Set after the parent has decided between 200
+    and 304, so it lands on both.
     """
 
-    def file_response(self, *args, **kwargs) -> Response:
-        response = super().file_response(*args, **kwargs)
-        response.headers["cache-control"] = "no-cache"
+    def file_response(self, full_path, *args, **kwargs) -> Response:
+        response = super().file_response(full_path, *args, **kwargs)
+        hashed = Path(full_path).parent.name == "assets"
+        response.headers["cache-control"] = IMMUTABLE if hashed else "no-cache"
         return response
 
 
 app.mount(
     "/static",
-    NoCacheStaticFiles(directory=STATIC_DIR, check_dir=False),
+    BuiltStaticFiles(directory=STATIC_DIR, check_dir=False),
     name="static",
 )
 

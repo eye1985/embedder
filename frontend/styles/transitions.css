@@ -22,14 +22,12 @@
 @keyframes page-out {
   to {
     opacity: 0;
-    transform: translateY(-6px);
   }
 }
 
 @keyframes page-in {
   from {
     opacity: 0;
-    transform: translateY(8px);
   }
 }
 

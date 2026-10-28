@@ -34,9 +34,8 @@
   padding-bottom: var(--sp-5);
 }
 
-/* Naming the header keeps it out of the `root` snapshot, so it cross-fades in
-   place -- only the title and which link is current differ -- while the
-   content below it moves. */
+/* Naming the header keeps it out of the `root` snapshot, so it cross-fades on
+   its own 160ms timing -- only the title and which link is current differ. */
 .header {
   view-transition-name: page-header;
   padding: var(--sp-6) 0 var(--sp-4);

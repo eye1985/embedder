@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "vite",
     "dev:api": "VITE_DEV_SERVER=http://localhost:5173 uv run uvicorn api.server:app --reload",
+    "prod": "npm run build && VITE_DEV_SERVER= uv run uvicorn api.server:app",
     "build": "tsc --noEmit && vite build",
     "watch": "vite build --watch",
     "typecheck": "tsc --noEmit",
