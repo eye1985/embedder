@@ -3,6 +3,9 @@
 Each builder commits. That is not incidental: the code under test reads
 through its own connections, so a row left uncommitted here would be invisible
 to it and the test would be checking nothing.
+
+The last two go through the API rather than the database, because what they
+stand for is a user downloading a file and uploading it again.
 """
 
 import json
@@ -20,17 +23,24 @@ def a_document(
     title: str = "Report",
     chunks: int = 3,
     source_uri: str | None = None,
+    metadata: dict | None = None,
     user_id: int = CURRENT_USER_ID,
 ) -> uuid.UUID:
     """A stored document with `chunks` chunks of distinct text, and no vectors.
 
     The text differs per chunk so the fake embedder produces distinct vectors,
     which is what lets a test tell "155 vectors" from "one vector 155 times".
+
+    `metadata` is merged into every chunk's, for the tests that need what a
+    real extractor leaves behind rather than just a page number.
     """
     document_id = add_document(
         conn,
         user_id,
-        [(f"{title} chunk {i} text", {"page": i}) for i in range(chunks)],
+        [
+            (f"{title} chunk {i} text", {"page": i, **(metadata or {})})
+            for i in range(chunks)
+        ],
         title=title,
         source_uri=source_uri if source_uri is not None else f"uploads/{title}.pdf",
     )
@@ -133,3 +143,21 @@ def embedded_models(conn: psycopg.Connection, document_id: uuid.UUID) -> set[str
         (document_id,),
     ).fetchall()
     return {table for (table,) in rows}
+
+
+def an_export(client, document_id: uuid.UUID) -> bytes:
+    """The JSON a user downloads for one document."""
+    response = client.get(f"/api/documents/{document_id}/embeddings")
+    assert response.status_code == 200, response.text
+    return response.content
+
+
+def restore_from_json(
+    client, data: bytes, *, overwrite: bool = False, name="export.json"
+):
+    """Upload an export back, the way the documents page does."""
+    return client.post(
+        "/api/documents/import",
+        files={"file": (name, data, "application/json")},
+        data={"overwrite": "true"} if overwrite else {},
+    )

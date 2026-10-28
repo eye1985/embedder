@@ -10,6 +10,14 @@ create table documents (
     -- Per-model state lives in document_embeddings and is left untouched, so
     -- switching a document back on restores exactly the models it had.
     searchable boolean not null default true,
+    -- Where these rows came from. 'upload' means a PDF this app extracted and
+    -- still has on disk to offer; 'import' means a JSON export restored back
+    -- in, which carries chunks and vectors but no file. The two are not the
+    -- same as each other and neither is the same as a PDF deleted by hand, so
+    -- a chat answer's sources can say which rather than guess from the
+    -- absence of a file.
+    origin     text not null default 'upload'
+               check (origin in ('upload', 'import')),
     created_at timestamptz not null default now()
 );
 

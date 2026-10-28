@@ -58,6 +58,11 @@ def sources(retrieved: list, answer: str) -> list[dict]:
 
     `filename` is what the download actually arrives as, which is why it is
     sent alongside the title -- the two differ, the title being the stem.
+
+    `origin` tells the two fileless cases apart. A restored export never had a
+    PDF here, so its passages came out of the user's own stored chunks and are
+    no less theirs; an upload whose file went missing is a file that should be
+    there and is not. Both are unclickable, and the chip says which.
     """
     cited = {int(number) for number in CITATION.findall(answer)}
     numbered = {
@@ -74,7 +79,7 @@ def sources(retrieved: list, answer: str) -> list[dict]:
 
     found: dict[str, dict] = {}
 
-    for _chunk_id, document_id, title, source_uri, page in rows:
+    for _chunk_id, document_id, title, source_uri, origin, page in rows:
         if document_id not in numbered:
             continue
         # Resolved against the disk, not just the column: a file deleted from
@@ -87,6 +92,7 @@ def sources(retrieved: list, answer: str) -> list[dict]:
                 "filename": stored.name if stored else None,
                 "pages": set(),
                 "has_source": stored is not None,
+                "origin": origin,
             },
         )
         if page is not None:
@@ -99,6 +105,7 @@ def sources(retrieved: list, answer: str) -> list[dict]:
             "filename": source["filename"],
             "pages": sorted(source["pages"]),
             "has_source": source["has_source"],
+            "origin": source["origin"],
         }
         for document_id, source in sorted(
             found.items(), key=lambda item: numbered[item[0]]

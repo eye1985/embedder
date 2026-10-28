@@ -11,7 +11,9 @@ spellings in the codebase agree here.
 
 Three endpoints are deliberately absent. `/chat` streams, `/embeddings`
 returns a zip, and a single document's export is a file download -- none are
-read as JSON by the frontend, which reaches them through plain links.
+read as JSON by the frontend, which reaches them through plain links. The
+reverse of that download does have a model here: restoring an export returns
+JSON the documents page reads.
 """
 
 import uuid
@@ -58,6 +60,18 @@ class EmbedResult(BaseModel):
     chunks: int
 
 
+class RestoreResult(BaseModel):
+    document_id: uuid.UUID
+    title: str | None
+    source_uri: str | None
+    chunks: int
+    embedded: dict[str, int]
+    # Null when the file carried no vectors, which is a document whose
+    # embeddings were deleted before it was exported.
+    search_model: str | None
+    replaced_existing: bool
+
+
 class DeleteEmbeddingsResult(BaseModel):
     document_id: uuid.UUID
     title: str | None
@@ -76,9 +90,11 @@ class DeleteDocumentResult(BaseModel):
 
 
 # A job's result is whichever shape its work returned: an upload reports an
-# ImportResult, a re-embed an EmbedResult. They overlap on what both pages
-# read, and `search_model` tells them apart.
-JobResult = ImportResult | EmbedResult
+# ImportResult, a re-embed an EmbedResult, a restored export a RestoreResult.
+# They overlap on what the pages read, so the order matters -- each shape here
+# requires a field the ones after it do not, which is what makes a stored
+# result validate as the type that produced it.
+JobResult = RestoreResult | ImportResult | EmbedResult
 
 
 class LastJob(BaseModel):

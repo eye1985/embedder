@@ -102,10 +102,15 @@ function refreshStatus(): void {
     // cold load that lands just after one ended -- the case where a reload
     // happens a second too late to see it running.
     if (wasWatching || last.finished_seconds_ago <= 15) {
-      // `search_model` is what an import reports and a re-embed does not, so
-      // it is how the two results are told apart. A re-embed's outcome belongs
-      // on the jobs page, not under the upload form.
-      if (last.result && "search_model" in last.result) {
+      // Only an upload's outcome belongs under the upload form -- a re-embed
+      // or a restored export reports on the jobs page, and either can hold
+      // the slot this page is watching. `reused_existing_document` is what an
+      // upload's result has and no other job's does.
+      if (
+        last.kind === "upload" &&
+        last.result &&
+        "reused_existing_document" in last.result
+      ) {
         status.report(last.result);
       } else if (last.error && last.kind === "upload") {
         status.error(last.error);

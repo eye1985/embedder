@@ -1,6 +1,7 @@
 import {
   deleteDocument,
   embedExisting,
+  importDocument,
   listDocuments,
   listModels,
   readJobStatus,
@@ -8,6 +9,7 @@ import {
   setSearchable,
 } from "../lib/endpoints";
 import type { DocumentOut } from "../lib/endpoints";
+import { ApiError } from "../lib/api";
 import { count } from "../lib/format";
 import { must, mustBe } from "../lib/dom";
 import { mountThemeToggle } from "../components/theme-toggle/theme-toggle";
@@ -26,6 +28,8 @@ const POLL_MS = 1500;
 const list = must("list");
 const summary = must("summary");
 const downloadAll = mustBe("download-all", HTMLAnchorElement);
+const importButton = mustBe("import", HTMLButtonElement);
+const importFile = mustBe("import-file", HTMLInputElement);
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -101,6 +105,68 @@ function actionsFor(doc: DocumentOut): DocActions {
 // once rather than per load.
 bindDownload(downloadAll, showError);
 
+// Two reasons the button is unavailable, and they can both be true: this page
+// is mid-import, or the slot is held by work started anywhere. Computed in one
+// place so whichever clears last leaves the button in the right state.
+let importing = false;
+let slotHeld = false;
+
+function refreshImport(): void {
+  importButton.disabled = importing || slotHeld;
+  importButton.textContent = importing ? "Importing…" : "Import JSON";
+  importButton.title =
+    slotHeld && !importing
+      ? "Another job is running. Imports take the same slot."
+      : "";
+}
+
+function setImporting(on: boolean): void {
+  importing = on;
+  refreshImport();
+}
+
+// Restoring an export writes rows and embeds nothing, so unlike an upload
+// there is no job to poll -- the response is the whole outcome.
+async function runImport(file: File, overwrite: boolean): Promise<void> {
+  setImporting(true);
+  try {
+    await importDocument(file, overwrite);
+    list.querySelector(".error-box")?.remove();
+    await load();
+  } catch (error) {
+    // The endpoint's other 409 is a busy job slot, which is not an offer.
+    if (
+      !overwrite &&
+      error instanceof ApiError &&
+      error.code === "document_exists"
+    ) {
+      if (
+        confirm(
+          `${error.message}\n\nReplace the stored document with this file? ` +
+            `Its chunks and every model's vectors are replaced by the ` +
+            `file's. The PDF it was imported from stays.`,
+        )
+      ) {
+        await runImport(file, true);
+      }
+      return;
+    }
+    showError(error instanceof Error ? error.message : "Import failed.");
+  } finally {
+    setImporting(false);
+  }
+}
+
+importButton.addEventListener("click", () => importFile.click());
+
+importFile.addEventListener("change", () => {
+  const file = importFile.files?.[0];
+  // Cleared first, so picking the same file again still fires `change` --
+  // which is what a second attempt after an error looks like.
+  importFile.value = "";
+  if (file) void runImport(file, false);
+});
+
 async function load(): Promise<void> {
   try {
     // Models and the job slot come along because the cards need both: which
@@ -113,27 +179,37 @@ async function load(): Promise<void> {
 
     list.replaceChildren();
 
+    // Decided once, before the empty-library branch returns: an import can be
+    // in flight with nothing listed yet, and leaving the button disabled with
+    // no poll to re-enable it would strand it.
+    slotHeld = job.active;
+    refreshImport();
+    if (job.active) startPolling();
+    else stopPolling();
+
     // Set on every load, not only when there are documents: deleting the last
     // one re-runs this with an empty list, and the button would otherwise stay
     // behind offering a zip with nothing in it.
     downloadAll.hidden = !documents.length;
 
+    const running = job.active
+      ? ` · ${job.kind === "import" ? "importing" : "embedding"} ` +
+        `${job.subject ?? "something"}…`
+      : "";
+
     if (!documents.length) {
-      summary.textContent = "No documents yet.";
+      summary.textContent = `No documents yet${running}.`;
       list.append(
         emptyState(
           "Nothing ingested yet",
-          "Upload a PDF and it will be chunked, embedded and listed here.",
+          "Upload a PDF and it will be chunked, embedded and listed here — " +
+            "or import a JSON export to put one back.",
         ),
       );
-      stopPolling();
       return;
     }
 
     const chunks = documents.reduce((total, doc) => total + doc.chunks, 0);
-    const running = job.active
-      ? ` · embedding ${job.subject ?? "something"}…`
-      : "";
     summary.textContent =
       `${documents.length} document${documents.length === 1 ? "" : "s"} · ` +
       `${count(chunks)} chunks${running}`;
@@ -149,15 +225,14 @@ async function load(): Promise<void> {
     for (const doc of documents) {
       list.append(docCard(doc, actionsFor(doc), context));
     }
-
-    // Only while something is in flight: with the slot free there is nothing
-    // left to update.
-    if (job.active) startPolling();
-    else stopPolling();
   } catch (error) {
     stopPolling();
     summary.textContent = "";
     downloadAll.hidden = true;
+    // The slot state is unknown now, so the button is left usable rather than
+    // stuck -- a job that is in fact running turns the import away with a 409.
+    slotHeld = false;
+    refreshImport();
     const message =
       error instanceof Error ? error.message : "Could not load documents.";
     list.replaceChildren(errorBox(message));

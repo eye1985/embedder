@@ -14,6 +14,7 @@ export interface JobActions {
 const KIND_LABEL: Record<string, string> = {
   upload: "Upload",
   embed: "Re-embed",
+  import: "Import",
 };
 
 const STATUS_LABEL: Record<string, string> = {

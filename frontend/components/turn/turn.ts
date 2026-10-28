@@ -49,9 +49,13 @@ function sourceList(
 
   for (const item of items) {
     const name = item.filename ?? item.title ?? "Untitled";
+    const restored = item.origin === "import";
 
-    // A document whose file is gone is still worth naming -- it was searched.
-    // It just has nothing to download.
+    // Three states, not two. A document with its file is a download. One
+    // restored from a JSON export never had a file here -- its text came out
+    // of the user's own export, which is worth saying rather than leaving it
+    // looking like something went missing. Anything else fileless is a PDF
+    // that should be on disk and is not.
     let chip: HTMLElement;
     if (item.has_source) {
       const link = Object.assign(el("a", "source"), {
@@ -63,19 +67,28 @@ function sourceList(
       bindDownload(link, onError);
       chip = link;
     } else {
-      chip = el("span", "source missing");
+      chip = el("span", `source ${restored ? "restored" : "missing"}`);
     }
 
     // The name is clipped when long, so the whole of it goes here too.
     chip.title = [
       name,
       item.pages.length > 0 ? `found on pages ${item.pages.join(", ")}` : "",
-      item.has_source ? "click to download" : "file no longer stored",
+      item.has_source
+        ? "click to download"
+        : restored
+          ? "imported from a JSON export — the text is stored, the PDF is not"
+          : "file no longer stored",
     ]
       .filter((part) => part !== "")
       .join(" — ");
 
     chip.append(el("span", "source-name", clip(name)));
+    // Said on the chip, not only in the tooltip: a chip that is simply not
+    // clickable looks broken until it says why.
+    if (!item.has_source && restored) {
+      chip.append(el("span", "source-tag", "from JSON"));
+    }
     node.append(chip);
   }
 

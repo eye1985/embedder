@@ -1,14 +1,15 @@
--- One row per job that writes embeddings: an upload, or a re-embed of a
--- document already stored. Durable, so "is a job running?" outlives the
--- process that answered it.
+-- One row per job that writes embeddings: an upload, a re-embed of a document
+-- already stored, or a downloaded export put back. Durable, so "is a job
+-- running?" outlives the process that answered it.
 
 create table jobs (
     -- A counter, not a uuid: this id is a handle for the jobs page and
     -- nothing else. `documents` uses a uuid because its id is in URLs.
     id          serial primary key,
     user_id     int  not null references users(id) on delete cascade,
-    kind        text not null check (kind in ('upload', 'embed')),
-    -- The filename for an upload, the document title for a re-embed.
+    kind        text not null check (kind in ('upload', 'embed', 'import')),
+    -- The filename for an upload, the document title for a re-embed or an
+    -- import.
     subject     text not null,
     models      jsonb not null default '[]'::jsonb,
     status      text not null
@@ -28,9 +29,9 @@ create table jobs (
 
 -- One job at a time per user, enforced by the database rather than by a
 -- process-local lock: a second concurrent job fails this insert instead of
--- racing the first past a check-then-act. This is what makes an upload and a
--- re-embed exclude each other -- the index does not care which kind the row
--- describes. Partial, so finished jobs pile up freely.
+-- racing the first past a check-then-act. This is what makes an upload, a
+-- re-embed and an import exclude each other -- the index does not care which
+-- kind the row describes. Partial, so finished jobs pile up freely.
 create unique index jobs_one_running_per_user
     on jobs (user_id)
     where status = 'running';

@@ -141,7 +141,25 @@ a.source:hover {
   white-space: nowrap;
 }
 
-/* Nothing to download, so it reads as a name rather than a dead link. */
+/* Nothing to download, so it reads as a name rather than a dead link.
+   A file that should be on disk and is not is faded, because something is
+   genuinely wrong with it. */
 .source.missing {
   opacity: 0.55;
+}
+
+/* Restored from a JSON export: nothing is wrong with it, so it keeps full
+   contrast and carries a tag instead. Still not a link. */
+.source.restored {
+  cursor: default;
+}
+
+/* Spacing comes from the chip's own flex gap. */
+.source-tag {
+  padding: 0 var(--sp-1);
+  border: 1px solid currentColor;
+  border-radius: var(--r-sm);
+  font-size: 0.85em;
+  opacity: 0.7;
+  white-space: nowrap;
 }

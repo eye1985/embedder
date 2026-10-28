@@ -75,12 +75,14 @@ nothing else -- no OpenAI key, and no network.
 
 ```
 test/
-  conftest.py       Test database, migrations, truncation, the fake embedder.
+  conftest.py       Test database, migrations, truncation, the fake embedder,
+                    and stored_pdf -- a real file under uploads/.
   fakes.py          Deterministic unit-vector embedder. No test reaches OpenAI.
-  factories.py      a_document(), a_job(), and the readers tests assert on.
+  factories.py      a_document(), a_job(), an_export(), and the readers.
   integration/
-    jobs/             One job at a time, and what happens when one dies.
-      concurrency/      The rule: an upload and a re-embed refuse each other.
+    jobs/               One job at a time, and what happens when one dies.
+      concurrency/      The rule: an upload, a re-embed and an import exclude
+                        one another.
         test_mutual_exclusion.py   Both directions, enforced by the index.
         test_slot_release.py       Handed back on success and on failure.
       recovery/         A job whose process died, and the way back.
@@ -91,11 +93,20 @@ test/
         test_listing.py            Order, and whether Re-run is offered.
         test_current_job.py        What is in flight, and the last outcome.
         test_deleting.py           Pruning history vs freeing a stuck slot.
-    re_embedding/     A stored document gaining a model it lacks.
+    re_embedding/       A stored document gaining a model it lacks.
       test_adding_a_model.py     The feature, and retrieval left alone.
       test_idempotency.py        A repeat writes nothing and duplicates nothing.
       test_stored_chunks.py      Chunks are the input; the PDF is never reread.
       test_refusals.py           No vector table, and someone else's document.
+    chat_sources/       What an answer says about where a passage came from.
+      test_what_a_source_offers.py  PDF, restored from JSON, or file gone.
+    deleting/           Delete means gone: rows, vectors and the file.
+      test_deleting_a_document.py   Asserted against the disk, not the reply.
+    restore_from_json/  A downloaded export uploaded back.
+      test_round_trip.py         The promise: the same file comes out again.
+      test_refusing_imports.py   Already here, and files that are not exports.
+      test_overwriting.py        Replacing one, and what survives it.
+      test_the_job_row.py        The slot an import holds, and handing it back.
 ```
 
 Run one feature's tests with `uv run pytest test/integration/jobs`, or one
@@ -178,6 +189,7 @@ so a route can never collide with a page.
 | `DELETE` | `/api/documents/{id}` | Delete the document, its vectors and its PDF. |
 | `GET` | `/api/documents/{id}/source` | Download the original PDF. |
 | `GET` | `/api/documents/{id}/embeddings` | Download one document as JSON. |
+| `POST` | `/api/documents/import` | Upload such a download back, exactly as it was. |
 | `POST` | `/api/documents/{id}/embeddings` | Embed an existing document with more models. |
 | `DELETE` | `/api/documents/{id}/embeddings` | Delete vectors, keep the chunks. |
 | `PUT` | `/api/documents/{id}/search-model/{table}` | Choose which model retrieves it. |
@@ -199,6 +211,18 @@ curl http://localhost:8000/api/documents
 curl -OJ http://localhost:8000/api/documents/<id>/embeddings
 curl -OJ http://localhost:8000/api/documents/<id>/source
 curl -OJ http://localhost:8000/api/embeddings
+
+# the reverse of that first download: no PDF is read and nothing is embedded,
+# so the vectors that land are the ones in the file. A document already stored
+# comes back 409; `overwrite` replaces it, keeping the PDF it came from.
+#
+# An export is NOT a backup of the PDF. A document deleted and then restored
+# has its chunks and vectors but no file, so it is marked origin='import' and
+# a chat answer's sources name it without offering a download.
+curl -X POST http://localhost:8000/api/documents/import \
+  -F 'file=@<id>-<title>.json'
+curl -X POST http://localhost:8000/api/documents/import \
+  -F 'file=@<id>-<title>.json' -F 'overwrite=true'
 
 curl -X POST http://localhost:8000/api/documents/<id>/embeddings \
   -H 'Content-Type: application/json' -d '{"models":["emb_qwen3_0_6b"]}'
@@ -270,6 +294,7 @@ db/             Talks to Postgres. All SQL lives here.
 indexing/       Files into embeddings. extract -> chunk -> embed, pdf.py on top.
 llm/chat.py     Builds the retrieval chain for one user.
 export.py       One document as JSON, a library as a zip. No SQL, no HTTP.
+restore_from_json.py  Reads an export back. Parsing and checks only; no SQL.
 paths.py        PROJECT_ROOT, which every stored source_uri is relative to.
 sql/            Migrations. Vector-table DDL is in db/setup.py.
 test/           Fixtures, fakes and builders; integration/ is one dir per feature.

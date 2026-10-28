@@ -213,6 +213,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/documents/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restore Document Endpoint
+         * @description Put a downloaded export back, exactly as it was.
+         *
+         *     The reverse of GET /documents/{id}/embeddings, and the one way into the
+         *     database that spends nothing: the vectors are in the file, so no PDF is
+         *     read, nothing is chunked, and the embedding API is never called. The
+         *     document keeps its id, its timestamp, its chunk ids and its vectors, so
+         *     exporting what this stored returns the same file.
+         *
+         *     A document already held under that id, or under the same `source_uri`, is
+         *     reported with 409 and nothing is written. `overwrite=true` replaces it
+         *     instead -- the old document, its chunks and its vectors go, and the PDF it
+         *     was imported from stays on disk, since this file has nothing to put in its
+         *     place.
+         *
+         *     Restored documents come back searchable, retrieved through the first model
+         *     the file lists.
+         */
+        post: operations["restore_document_endpoint_api_documents_import_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/documents/{document_id}": {
         parameters: {
             query?: never;
@@ -368,6 +403,16 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** Body_restore_document_endpoint_api_documents_import_post */
+        Body_restore_document_endpoint_api_documents_import_post: {
+            /** File */
+            file: string;
+            /**
+             * Overwrite
+             * @default false
+             */
+            overwrite: boolean;
+        };
         /** Body_upload_endpoint_api_upload_post */
         Body_upload_endpoint_api_upload_post: {
             /** File */
@@ -511,7 +556,7 @@ export interface components {
             /** Document Id */
             document_id: string | null;
             /** Result */
-            result: components["schemas"]["ImportResult"] | components["schemas"]["EmbedResult"] | null;
+            result: components["schemas"]["RestoreResult"] | components["schemas"]["ImportResult"] | components["schemas"]["EmbedResult"] | null;
             /** Error */
             error: string | null;
             /** Started At */
@@ -544,7 +589,7 @@ export interface components {
             /** Subject */
             subject: string;
             /** Result */
-            result: components["schemas"]["ImportResult"] | components["schemas"]["EmbedResult"] | null;
+            result: components["schemas"]["RestoreResult"] | components["schemas"]["ImportResult"] | components["schemas"]["EmbedResult"] | null;
             /** Error */
             error: string | null;
             /** Finished Seconds Ago */
@@ -591,6 +636,28 @@ export interface components {
             };
             /** Chunks */
             chunks: number;
+        };
+        /** RestoreResult */
+        RestoreResult: {
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Title */
+            title: string | null;
+            /** Source Uri */
+            source_uri: string | null;
+            /** Chunks */
+            chunks: number;
+            /** Embedded */
+            embedded: {
+                [key: string]: number;
+            };
+            /** Search Model */
+            search_model: string | null;
+            /** Replaced Existing */
+            replaced_existing: boolean;
         };
         /** SearchModelResult */
         SearchModelResult: {
@@ -891,6 +958,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    restore_document_endpoint_api_documents_import_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_restore_document_endpoint_api_documents_import_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoreResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

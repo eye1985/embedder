@@ -8,6 +8,7 @@ export type ModelOut = Schemas["ModelOut"];
 export type JobStatusOut = Schemas["JobStatus"];
 export type JobOut = Schemas["JobOut"];
 export type ImportResult = Schemas["ImportResult"];
+export type RestoreResult = Schemas["RestoreResult"];
 
 // Every API URL the frontend knows, in one place and typed from the schema
 // `npm run api-types` generates. A route renamed on the server fails the
@@ -39,10 +40,24 @@ export interface Source {
   /** In the PDF's own numbering, so the first page is 1. */
   pages: number[];
   has_source: boolean;
+  /** Where the document's rows came from. "import" means it was restored
+   *  from a JSON export, so there is no PDF behind it by design. */
+  origin: "upload" | "import";
 }
 
 export const uploadPdf = (body: FormData) =>
   postForm<ImportResult>("/api/upload", body);
+
+// The reverse of `documentExportHref`: the downloaded JSON, put back. Nothing
+// is embedded -- the vectors are in the file -- so this costs nothing to
+// repeat. A document already stored comes back as a 409 until `overwrite` is
+// set, which is how the page knows to ask.
+export const importDocument = (file: File, overwrite = false) => {
+  const body = new FormData();
+  body.append("file", file);
+  if (overwrite) body.append("overwrite", "true");
+  return postForm<RestoreResult>("/api/documents/import", body);
+};
 
 export const setSearchable = (id: string, searchable: boolean) =>
   send<Schemas["SearchableResult"]>(`/api/documents/${id}`, "PATCH", {

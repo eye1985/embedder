@@ -1,8 +1,9 @@
 """The job endpoints: what is running, what has run, and what to do about it.
 
-One job at a time per user, across uploads and re-embeds both. The slot is a
-row in `jobs` and the claim is `api/services/jobs.begin_job`, so the 409 here
-and the one /upload returns are the same rule.
+One job at a time per user, across uploads, re-embeds and restored exports
+alike. The slot is a row in `jobs` and the claim is
+`api/services/jobs.begin_job`, so the 409 here and the one /upload returns are
+the same rule.
 
 A crash leaves a row marked running and nothing alive to correct it. Startup
 fixes the status (`sweep_running_jobs`), and these endpoints are how the user
@@ -27,9 +28,9 @@ from api.services.jobs import (
     list_jobs,
     replay_plan,
 )
+from api.services.sources import source_path
 from db.pool import connection
 from indexing.pdf import ExtractionFailed, import_pdf
-from paths import PROJECT_ROOT
 
 router = APIRouter()
 
@@ -37,10 +38,12 @@ router = APIRouter()
 def slot_conflict(running: dict) -> HTTPException:
     """The 409 for a job that cannot start because one is already running.
 
-    Shared so an upload turned away by a re-embed, and a re-embed turned away
-    by an upload, both say which kind of work is in the way.
+    Shared by every endpoint that claims the slot, so whichever kind of work
+    is in the way is the one named.
     """
-    doing = "An upload" if running["kind"] == "upload" else "An embedding job"
+    doing = {"upload": "An upload", "import": "An import"}.get(
+        running["kind"], "An embedding job"
+    )
     return HTTPException(
         409,
         f"{doing} is already in progress ({running['subject']}). "
@@ -123,9 +126,15 @@ def rerun_job_endpoint(job_id: int):
                         conn, CURRENT_USER_ID, uuid.UUID(target), models
                     )
                 else:
-                    result = import_pdf(
-                        conn, CURRENT_USER_ID, PROJECT_ROOT / source_uri, models
-                    )
+                    # Resolved through the same check `replay_plan` used, so
+                    # the path re-read here is the one it approved rather than
+                    # the raw column joined onto PROJECT_ROOT again.
+                    pdf = source_path(source_uri)
+                    if pdf is None:
+                        raise HTTPException(
+                            404, f"No stored file at {source_uri!r} to re-import."
+                        )
+                    result = import_pdf(conn, CURRENT_USER_ID, pdf, models)
             except ExtractionFailed as exc:
                 raise HTTPException(422, str(exc)) from exc
             except LookupError as exc:

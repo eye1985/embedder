@@ -3,11 +3,22 @@
 {% block content %}
 <section class="toolbar">
   <p id="summary" class="muted"></p>
-  {# The href is what the script downloads through, and what "save link as"
-     and a page with no script still fall back to. #}
-  <a id="download-all" class="button small" href="/api/embeddings" hidden>
-    Download all (.zip)
-  </a>
+  <div class="toolbar-actions">
+    {# The picker the button opens. An import is parsed and thrown away, so
+       unlike /upload there is no form around it. #}
+    <input
+      id="import-file"
+      type="file"
+      accept="application/json,.json"
+      hidden
+    />
+    <button id="import" class="button small" type="button">Import JSON</button>
+    {# The href is what the script downloads through, and what "save link as"
+       and a page with no script still fall back to. #}
+    <a id="download-all" class="button small" href="/api/embeddings" hidden>
+      Download all (.zip)
+    </a>
+  </div>
 </section>
 
 <div id="list" class="list"></div>

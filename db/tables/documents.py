@@ -12,6 +12,7 @@ re-extracted.
 import json
 import uuid
 from collections.abc import Iterable
+from datetime import datetime
 
 import psycopg
 
@@ -63,6 +64,45 @@ def add_document(
         )
 
     return document_id
+
+
+def restore_document(
+    conn: psycopg.Connection,
+    user_id: int,
+    document_id: uuid.UUID,
+    chunks: Iterable[tuple[uuid.UUID, int, str, dict]],
+    *,
+    title: str | None = None,
+    source_uri: str | None = None,
+    created_at: datetime,
+) -> None:
+    """Store a document and its chunks under ids they already have.
+
+    The counterpart to `add_document`, for rows being put back rather than
+    created: an export carries its own document id, chunk ids, chunk order and
+    timestamp, and restoring it keeps all four -- otherwise the file no longer
+    describes what is in the database.
+
+    `searchable` is left at the column default, which is where a fresh upload
+    starts too. `origin` is not: the file carries chunks and vectors but no
+    PDF, so this document has nothing to offer for download no matter what
+    its `source_uri` says, and recording that is how a chat answer can say so
+    rather than infer it from a file that happens to be missing.
+    """
+    conn.execute(
+        "insert into documents "
+        "(id, user_id, title, source_uri, origin, created_at) "
+        "values (%s, %s, %s, %s, 'import', %s)",
+        (document_id, user_id, title, source_uri, created_at),
+    )
+
+    for chunk_id, chunk_index, content, metadata in chunks:
+        conn.execute(
+            "insert into document_chunks "
+            "(id, document_id, chunk_index, content, metadata) "
+            "values (%s, %s, %s, %s, %s)",
+            (chunk_id, document_id, chunk_index, content, json.dumps(metadata or {})),
+        )
 
 
 def unembedded_chunks(
@@ -151,8 +191,9 @@ def cited_chunks(
 ) -> list[tuple]:
     """Retrieved chunks resolved to their documents.
 
-    Returns (chunk_id, document_id, title, source_uri, page). `page` is left
-    as the extractor stored it, which is 0-indexed.
+    Returns (chunk_id, document_id, title, source_uri, origin, page). `page`
+    is left as the extractor stored it, which is 0-indexed, and `origin` says
+    whether a PDF was ever stored for this document at all.
 
     Scoped to the user, so a chunk_id belonging to someone else returns no row
     rather than its document's title. Only the page is read out of `metadata`:
@@ -162,7 +203,7 @@ def cited_chunks(
         return []
     return conn.execute(
         """
-        select c.id::text, d.id::text, d.title, d.source_uri,
+        select c.id::text, d.id::text, d.title, d.source_uri, d.origin,
                (c.metadata->>'page')::int
         from document_chunks c
         join documents d on d.id = c.document_id
@@ -190,6 +231,46 @@ def vector_rows(
         """,
         (document_id,),
     ).fetchall()
+
+
+def insert_vectors(
+    conn: psycopg.Connection,
+    table_name: str,
+    rows: Iterable[tuple[uuid.UUID, int, uuid.UUID, str, list[float]]],
+) -> int:
+    """Write vectors straight into a model's table. Returns how many landed.
+
+    The one path into a vector table that does not go through PGVectorStore,
+    because restoring an export has nothing to embed -- the vectors are in the
+    file. `rows` is (chunk_id, user_id, document_id, content, vector).
+
+    `content` is duplicated from the chunk and `langchain_metadata` is an empty
+    object, which is exactly what the store writes for these columns.
+
+    The vector is bound as pgvector's own text form and cast; a halfvec column
+    takes the same literal through the implicit cast from vector.
+
+    `table_name` comes from the registry, never from a request.
+    """
+    written = 0
+    for chunk_id, user_id, document_id, content, vector in rows:
+        conn.execute(
+            f"""
+            insert into "{table_name}"
+                (content, embedding, chunk_id, user_id, document_id,
+                 langchain_metadata)
+            values (%s, %s::vector, %s, %s, %s, '{{}}'::jsonb)
+            """,
+            (
+                content,
+                json.dumps(vector, separators=(",", ":")),
+                chunk_id,
+                user_id,
+                document_id,
+            ),
+        )
+        written += 1
+    return written
 
 
 def embedded_counts(

@@ -12,6 +12,17 @@ export interface UploadStatusView {
   clear: () => void;
 }
 
+// The job slot is shared, so this panel can be reporting work the upload page
+// did not start. Both maps are keyed by job kind.
+const VERB: Record<string, string> = {
+  upload: "Embedding",
+  import: "Restoring",
+};
+
+const OTHER_JOB: Record<string, string> = {
+  import: "An import",
+};
+
 // The outcome panel under the upload form: running, finished, or failed.
 // Render only -- the polling that decides which of these to show lives on the
 // page, because an upload outlives the page that started it.
@@ -19,7 +30,7 @@ export function uploadStatus(node: HTMLElement): UploadStatusView {
   return {
     progress(subject, elapsed, kind) {
       const card = el("article", "card progress");
-      const verb = kind === "upload" ? "Embedding" : "Re-embedding";
+      const verb = VERB[kind] ?? "Re-embedding";
       card.append(el("h2", "card-title", `${verb} ${subject}…`));
 
       const meta = el("p", "card-meta");
@@ -39,8 +50,8 @@ export function uploadStatus(node: HTMLElement): UploadStatusView {
           kind === "upload"
             ? "This runs on the server. You can reload or close this page — " +
                 "the upload keeps going and will show up under Documents."
-            : "A re-embed is using the job slot, so an upload has to wait for " +
-                "it. Follow it under Jobs.",
+            : `${OTHER_JOB[kind] ?? "A re-embed"} is using the job slot, so ` +
+                "an upload has to wait for it. Follow it under Jobs.",
         ),
       );
       node.replaceChildren(card);

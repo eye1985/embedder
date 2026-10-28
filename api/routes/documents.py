@@ -1,4 +1,5 @@
-"""The document endpoints: listing, downloads, search state, and deletion.
+"""The document endpoints: listing, downloads, restores, search state, and
+deletion.
 
 The work itself is `api/services/documents.py`. These are the requests
 around it -- every one scoped to the current user, so another user's
@@ -6,8 +7,9 @@ document is reported missing rather than refused.
 """
 
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from starlette.responses import FileResponse, JSONResponse, Response
 
@@ -19,6 +21,7 @@ from api.schemas import (
     DeleteEmbeddingsResult,
     DocumentOut,
     EmbedResult,
+    RestoreResult,
     SearchableResult,
     SearchModelResult,
 )
@@ -31,12 +34,19 @@ from api.services.documents import (
     list_documents,
 )
 from api.services.jobs import begin_job, finish_job
+from api.services.restore_from_json import (
+    CannotRestore,
+    conflicting_document,
+    restore_export,
+)
 from api.services.sources import source_path
+from api.services.uploads import read_upload
 from db.pool import connection
 from db.tables.documents import get_document, set_searchable
 from db.tables.embeddings import set_document_model
 from db.tables.registry import get_model
 from export import document_filename
+from restore_from_json import InvalidExport, parse_export
 
 router = APIRouter()
 
@@ -118,6 +128,108 @@ def download_all_embeddings():
             raise HTTPException(404, str(exc)) from exc
 
     return Response(archive, media_type="application/zip", headers=attachment(filename))
+
+
+def already_here(existing: dict) -> HTTPException:
+    """The 409 for a file whose document is already stored.
+
+    Says which of the two collisions it is, because they mean different
+    things: the same id is this export coming home, the same source_uri is a
+    different export of the same PDF.
+
+    The detail is an object rather than a string so the page can tell this
+    conflict from the other 409 this endpoint returns -- a busy job slot is
+    something to report, this is something to offer overwriting.
+    """
+    if existing["matched"] == "id":
+        subject = existing["title"] or existing["document_id"]
+        reason = f"This export is already in your library as {subject!r}"
+    else:
+        reason = f"A document is already stored for {existing['source_uri']!r}"
+    return HTTPException(
+        409,
+        {
+            "reason": "document_exists",
+            "message": f"{reason}. Nothing was imported.",
+        },
+    )
+
+
+# Sync `def` for the same reason as POST /upload: psycopg blocks, so FastAPI
+# runs this in a worker thread rather than stalling the event loop while a
+# document's worth of vectors is written.
+@router.post("/documents/import", response_model=RestoreResult)
+def restore_document_endpoint(
+    file: UploadFile,
+    overwrite: Annotated[bool, Form()] = False,
+):
+    """Put a downloaded export back, exactly as it was.
+
+    The reverse of GET /documents/{id}/embeddings, and the one way into the
+    database that spends nothing: the vectors are in the file, so no PDF is
+    read, nothing is chunked, and the embedding API is never called. The
+    document keeps its id, its timestamp, its chunk ids and its vectors, so
+    exporting what this stored returns the same file.
+
+    A document already held under that id, or under the same `source_uri`, is
+    reported with 409 and nothing is written. `overwrite=true` replaces it
+    instead -- the old document, its chunks and its vectors go, and the PDF it
+    was imported from stays on disk, since this file has nothing to put in its
+    place.
+
+    Restored documents come back searchable, retrieved through the first model
+    the file lists.
+    """
+    try:
+        exported = parse_export(read_upload(file))
+    except InvalidExport as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    with connection() as conn:
+        existing = conflicting_document(conn, CURRENT_USER_ID, exported)
+    if existing is not None and not overwrite:
+        raise already_here(existing)
+
+    # The same slot /upload and the re-embed endpoint hold. Nothing here is
+    # paid for, but it writes the same rows they do, so an import and an
+    # upload of the same document cannot run into each other.
+    #
+    # No `document_id`: the row the file describes does not exist yet, and the
+    # jobs table has a foreign key to it. `finish_job` reads it off the result
+    # once it does, which is how an upload's row gains the link too.
+    job_id, running = begin_job(
+        CURRENT_USER_ID,
+        "import",
+        exported.title or exported.source_uri or str(exported.document_id),
+        [m.table_name for m in exported.models],
+        source_uri=exported.source_uri,
+    )
+    if running is not None:
+        raise slot_conflict(running)
+
+    try:
+        with connection() as conn:
+            try:
+                result = restore_export(
+                    conn,
+                    CURRENT_USER_ID,
+                    exported,
+                    replace=existing["document_id"] if existing else None,
+                )
+            except LookupError as exc:
+                # A model the file names and this registry does not have.
+                raise HTTPException(404, str(exc)) from exc
+            except CannotRestore as exc:
+                raise HTTPException(400, str(exc)) from exc
+        finish_job(job_id, result=result)
+        return result
+    except HTTPException as exc:
+        # Recorded, not just raised: the jobs page reads the outcome from here.
+        finish_job(job_id, error=str(exc.detail))
+        raise
+    except Exception as exc:
+        finish_job(job_id, error=f"Restore failed ({type(exc).__name__}).")
+        raise
 
 
 @router.patch("/documents/{document_id}", response_model=SearchableResult)

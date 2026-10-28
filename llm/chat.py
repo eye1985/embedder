@@ -241,7 +241,7 @@ def _label(user_id: int, documents: list[Document]) -> list[Document]:
 
     found = {
         chunk_id: (document_id, title, page)
-        for chunk_id, document_id, title, _, page in rows
+        for chunk_id, document_id, title, _, _, page in rows
     }
     for document in documents:
         document_id, title, page = found.get(

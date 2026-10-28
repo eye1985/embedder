@@ -31,10 +31,12 @@ os.environ["DATABASE_URL"] = TEST_URL
 import psycopg
 import pytest
 
+from api.services.uploads import UPLOAD_DIR
 from db import vectors
 from db.pool import close_pool, connection
 from db.setup import apply_migrations, create_vector_table
 from db.tables.registry import get_model, list_models
+from paths import PROJECT_ROOT
 from test.fakes import FakeEmbeddings
 
 # Everything a test may write. Truncated between tests, newest-dependency
@@ -138,6 +140,21 @@ def small_model(conn):
 def large_model(conn):
     """text-embedding-3-large: 3072 dimensions, a `halfvec` column."""
     return get_model(conn, table_name="emb_openai_te3_large")
+
+
+@pytest.fixture
+def stored_pdf():
+    """The PDF an upload would have left behind, and its `source_uri`.
+
+    Written for real rather than faked: whether a document can offer its file
+    is decided by resolving the path under uploads/ and asking the disk, so a
+    file that is not there would make a test pass for the wrong reason.
+    """
+    UPLOAD_DIR.mkdir(exist_ok=True)
+    path = UPLOAD_DIR / "stored-source.pdf"
+    path.write_bytes(b"%PDF-1.4 stand-in")
+    yield path, str(path.relative_to(PROJECT_ROOT))
+    path.unlink(missing_ok=True)
 
 
 @pytest.fixture

@@ -1,26 +1,59 @@
-// FastAPI puts the reason in `detail`; a validation error makes it a list.
-async function reason(response: Response): Promise<string> {
+// FastAPI puts the reason in `detail`: a string usually, a list for a
+// validation error, and an object where the endpoint has a code the caller
+// has to act on rather than only show.
+async function reason(response: Response): Promise<[string, string | null]> {
   const payload: unknown = await response.json().catch(() => null);
   const detail =
     payload && typeof payload === "object" && "detail" in payload
       ? payload.detail
       : null;
+  const fallback = `Request failed (${response.status})`;
 
   if (Array.isArray(detail)) {
-    return detail
+    const messages = detail
       .map((item: unknown) =>
         item && typeof item === "object" && "msg" in item ? String(item.msg) : "",
       )
       .filter(Boolean)
       .join(", ");
+    return [messages || fallback, null];
   }
-  if (typeof detail === "string") return detail;
-  return `Request failed (${response.status})`;
+  if (typeof detail === "string") return [detail, null];
+  if (detail && typeof detail === "object") {
+    return [
+      "message" in detail ? String(detail.message) : fallback,
+      "reason" in detail ? String(detail.reason) : null,
+    ];
+  }
+  return [fallback, null];
+}
+
+/** A failed response, carrying the status and any code the endpoint sent.
+ *
+ *  `code` is what lets the import flow tell its two 409s apart: a document
+ *  that is already stored is an offer to overwrite, while the job slot being
+ *  busy is just a message. Everywhere else this is caught as a plain Error.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly code: string | null;
+
+  constructor(message: string, status: number, code: string | null = null) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.code = code;
+  }
+}
+
+async function apiError(response: Response): Promise<ApiError> {
+  const [message, code] = await reason(response);
+  return new ApiError(message, response.status, code);
 }
 
 export async function getJSON<T>(url: string): Promise<T> {
   const response = await fetch(url);
-  if (!response.ok) throw new Error(await reason(response));
+  if (!response.ok) throw await apiError(response);
   return (await response.json()) as T;
 }
 
@@ -40,13 +73,13 @@ export async function send<T>(
           body: JSON.stringify(body),
         }),
   });
-  if (!response.ok) throw new Error(await reason(response));
+  if (!response.ok) throw await apiError(response);
   return (await response.json().catch(() => null)) as T | null;
 }
 
 export async function postForm<T>(url: string, body: FormData): Promise<T> {
   const response = await fetch(url, { method: "POST", body });
-  if (!response.ok) throw new Error(await reason(response));
+  if (!response.ok) throw await apiError(response);
   return (await response.json()) as T;
 }
 
@@ -85,7 +118,7 @@ function attachmentName(response: Response): string {
 // at the cost of holding the file in memory while it saves.
 export async function download(url: string): Promise<void> {
   const response = await fetch(url);
-  if (!response.ok) throw new Error(await reason(response));
+  if (!response.ok) throw await apiError(response);
 
   const href = URL.createObjectURL(await response.blob());
   const link = document.createElement("a");

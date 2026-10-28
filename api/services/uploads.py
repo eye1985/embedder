@@ -45,6 +45,22 @@ def upload_source_uri(name: str) -> str:
     return str((UPLOAD_DIR / name).relative_to(PROJECT_ROOT))
 
 
+def read_upload(upload: UploadFile) -> bytes:
+    """An upload read into memory instead of onto disk, under the same ceiling.
+
+    What restoring an export reads. The file is parsed and thrown away rather
+    than stored, so it never lands in uploads/ and needs no filename -- but it
+    is still a browser's bytes, and a JSON export is mostly vectors, so the
+    size limit still applies.
+    """
+    data = upload.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            413, f"Files are limited to {MAX_UPLOAD_BYTES // 1024 // 1024}MB."
+        )
+    return data
+
+
 def save_upload(upload: UploadFile, name: str) -> Path:
     """Write an uploaded PDF into uploads/ under `name` and return its path.
 

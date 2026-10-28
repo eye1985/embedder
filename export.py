@@ -57,14 +57,24 @@ def _clean_metadata(metadata: dict | None) -> dict:
     server's directory layout into a file the user downloads. Every other key
     is passed through untouched, so page numbers and titles survive a
     round-trip and an export can still be cited.
+
+    Cleaning is idempotent, which `restore_from_json.py` depends on: a restored
+    document exported again has to produce the same file.
     """
     cleaned = dict(metadata or {})
     for key in ("source", "file_path"):
         value = cleaned.get(key)
         if not isinstance(value, str):
             continue
+        # A relative value is already one of ours -- a restored export brings
+        # its metadata back cleaned. Resolved against the project rather than
+        # the working directory, so running this twice is running it once,
+        # whatever the server was started from.
+        path = Path(value)
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
         try:
-            cleaned[key] = str(Path(value).resolve().relative_to(PROJECT_ROOT))
+            cleaned[key] = str(path.resolve().relative_to(PROJECT_ROOT))
         except ValueError:
             # Imported from outside the repo: keep the filename, drop the path.
             cleaned[key] = Path(value).name

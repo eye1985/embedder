@@ -80,6 +80,14 @@
   border-bottom: 1px solid var(--rule);
 }
 
+/* Import and download sit together, and the download hides itself when there
+   is nothing to download -- so they are a group rather than two flex items. */
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
 /* Holds its line open while empty: the summary is filled by a fetch, and the
    row would otherwise grow under the incoming page transition. */
 .toolbar p {

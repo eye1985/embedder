@@ -1,9 +1,9 @@
 """The `jobs` table: one row per job that writes embeddings.
 
-Two kinds share it -- an upload and a re-embed of a stored document -- because
-they share one rule: one at a time per user. `jobs_one_running_per_user` is
-what enforces that, and it does not care which kind the row describes, so an
-upload and a re-embed exclude each other for free.
+Three kinds share it -- an upload, a re-embed of a stored document, and a
+restored export -- because they share one rule: one at a time per user.
+`jobs_one_running_per_user` is what enforces that, and it does not care which
+kind the row describes, so they exclude each other for free.
 
 Every function here takes its own short-lived connection rather than the one
 the job is holding. That is deliberate: the job's connection stays in a
@@ -18,9 +18,9 @@ import uuid
 
 import psycopg
 
+from api.services.sources import source_path
 from db.pool import connection
 from db.tables.documents import find_document
-from paths import PROJECT_ROOT
 
 # How long a finished job stays reportable on the upload page. A page that
 # reloads just as the work ends still has something to show; one opened an
@@ -191,7 +191,11 @@ def replay_plan(
     on anyway.
 
     "import" is only for an upload that died before storing anything, where
-    the PDF is still on disk and has to be extracted again.
+    the PDF is still on disk and has to be extracted again. That file is found
+    through `source_path`, which resolves it and keeps it inside the
+    directories this app imports from -- `source_uri` is a stored string, and
+    a re-run reads whatever it points at, so it is not trusted to be one of
+    ours just because it is in the column.
     """
     if document_id is not None:
         row = conn.execute(
@@ -208,7 +212,7 @@ def replay_plan(
     if existing is not None:
         return "embed", str(existing)
 
-    if (PROJECT_ROOT / source_uri).is_file():
+    if source_path(source_uri) is not None:
         return "import", None
     return "none", None
 
@@ -219,6 +223,10 @@ def list_jobs(conn: psycopg.Connection, user_id: int) -> list[dict]:
     `can_rerun` says whether the inputs to replay this job still exist -- its
     document, or the PDF it came from. Without it the page would offer a
     button that 404s.
+
+    An import is never re-runnable: its input was an uploaded file that was
+    parsed and thrown away, so the button would re-embed the document it
+    restored and spend against the API for work the job never did.
     """
     rows = conn.execute(
         """
@@ -264,7 +272,12 @@ def list_jobs(conn: psycopg.Connection, user_id: int) -> list[dict]:
                 "started_at": started_at.isoformat(),
                 "finished_at": finished_at.isoformat() if finished_at else None,
                 "elapsed_seconds": round(float(elapsed), 1),
-                "can_rerun": (status != "running" and bool(models) and plan != "none"),
+                "can_rerun": (
+                    status != "running"
+                    and kind != "import"
+                    and bool(models)
+                    and plan != "none"
+                ),
             }
         )
     return jobs
