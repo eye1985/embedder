@@ -1,7 +1,7 @@
 """Writing a downloaded export back into the database.
 
-The file is parsed and checked by `restore_from_json.py`, which knows nothing
-about Postgres. What is left is the half that does: matching the file's models
+The file is parsed and checked by `parse.py`, which knows nothing about
+Postgres. What is left is the half that does: matching the file's models
 against this installation's registry, noticing that the document is already
 here, and writing the rows.
 
@@ -19,6 +19,7 @@ import uuid
 
 import psycopg
 
+from api.services.from_json.parse import ExportedDocument, ExportedModel
 from db.tables.documents import (
     count_chunks,
     find_document,
@@ -29,7 +30,6 @@ from db.tables.documents import (
 from db.tables.documents import delete_document as delete_document_rows
 from db.tables.embeddings import mark_embedded, set_document_model
 from db.tables.registry import EmbeddingModel, get_model, table_exists
-from restore_from_json import ExportedDocument, ExportedModel
 
 
 class CannotRestore(Exception):

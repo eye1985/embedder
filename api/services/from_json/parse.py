@@ -1,4 +1,4 @@
-"""Reading an export back in: the reverse of `export.py`.
+"""Reading an export back in: the reverse of `api/services/export.py`.
 
 An export already holds everything a document is made of -- its id, its
 chunks, and every model's vectors for them -- so restoring one is a write, not
@@ -10,8 +10,8 @@ produces the identical float4 or fp16 value, so a document that goes out and
 comes back is the same document down to the bit.
 
 Nothing here reads the database or knows about HTTP. It takes the bytes of a
-downloaded file and returns the rows `api/services/restore_from_json.py`
-writes, or raises InvalidExport saying what is wrong with them.
+downloaded file and returns the rows `restore.py` writes, or raises
+InvalidExport saying what is wrong with them.
 """
 
 import json
@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import PurePosixPath
 
-from export import EXPORT_VERSION
+from api.services.export import EXPORT_VERSION
 
 
 class InvalidExport(Exception):

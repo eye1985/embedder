@@ -7,8 +7,8 @@ follows that -- content stored once, `embeddings` keyed by table name --
 rather than one file per model, which would repeat the text for every model.
 
 `EXPORT_VERSION` makes this a contract: anything that changes the shape of a
-payload below should bump it. Nothing here reads the database or knows about
-HTTP; it takes rows and returns bytes.
+payload below should bump it. No SQL is written here -- rows arrive through
+`db/tables/` -- and nothing knows about HTTP: it returns bytes, not responses.
 """
 
 import io
@@ -58,7 +58,7 @@ def _clean_metadata(metadata: dict | None) -> dict:
     is passed through untouched, so page numbers and titles survive a
     round-trip and an export can still be cited.
 
-    Cleaning is idempotent, which `restore_from_json.py` depends on: a restored
+    Cleaning is idempotent, which `from_json/parse.py` depends on: a restored
     document exported again has to produce the same file.
     """
     cleaned = dict(metadata or {})

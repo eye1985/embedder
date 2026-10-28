@@ -13,6 +13,7 @@ import uuid
 
 import psycopg
 
+from api.services.export import build_archive, export_document
 from api.services.uploads import UPLOAD_DIR
 from db.tables.documents import (
     count_chunks,
@@ -24,7 +25,6 @@ from db.tables.documents import (
 from db.tables.documents import delete_document as delete_document_rows
 from db.tables.embeddings import models_by_document, unmark_embedded
 from db.tables.registry import list_models, models_with_tables
-from export import build_archive, export_document
 from indexing.embed import embed_document
 from paths import PROJECT_ROOT
 

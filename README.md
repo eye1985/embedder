@@ -279,22 +279,29 @@ rather than re-extracted.
 ## Layout
 
 ```
-api/            Speaks HTTP. No SQL, no export format, no pipeline.
+api/            Speaks HTTP. No SQL of its own, no pipeline.
   routes/       One router per resource, composed in routes/__init__.py.
-  services/     The work behind the routes. jobs.py owns the one-at-a-time slot.
+  services/     The work behind the routes. One module per feature, or a
+                directory once a feature outgrows one file.
+    documents.py  The shapes the document endpoints return.
+    jobs.py       Owns the one-at-a-time slot.
+    export.py     One document as JSON, a library as a zip. EXPORT_VERSION.
+    from_json/    An export read back in. Split where the database starts:
+      parse.py      Checks and takes apart the uploaded bytes. No SQL.
+      restore.py    Matches the registry and writes the rows.
+    sources.py    Resolves a stored source_uri to a file on disk.
+    uploads.py    Where an uploaded file lands.
   config.py     CURRENT_USER_ID and the frontend directories.
   schemas.py    Response models. What the generated frontend types come from.
   assets.py     Resolves a frontend entry to built URLs via the Vite manifest.
   server.py     The app: lifespan, static mount, error handlers.
-db/             Talks to Postgres. All SQL lives here.
+db/             Talks to Postgres. Every SQL statement lives here.
   tables/       Row access, one module per table group.
   pool.py       Connection settings and the psycopg pool.
   vectors.py    Embedding-service factory, cached engines and vector stores.
   setup.py      Migration runner and vector-table DDL. The only place running DDL.
 indexing/       Files into embeddings. extract -> chunk -> embed, pdf.py on top.
 llm/chat.py     Builds the retrieval chain for one user.
-export.py       One document as JSON, a library as a zip. No SQL, no HTTP.
-restore_from_json.py  Reads an export back. Parsing and checks only; no SQL.
 paths.py        PROJECT_ROOT, which every stored source_uri is relative to.
 sql/            Migrations. Vector-table DDL is in db/setup.py.
 test/           Fixtures, fakes and builders; integration/ is one dir per feature.
