@@ -1,12 +1,15 @@
 import { el } from "../../lib/dom";
+import { renderMarkdown } from "../../lib/markdown";
 import { documentSourceHref, type Source } from "../../lib/endpoints";
 import { bindDownload } from "../download/download";
 
 export type Role = "user" | "assistant" | "error";
 
 export interface Reply {
-  /** What a streaming answer is written into. */
+  /** The node a streaming answer is written into. */
   body: HTMLElement;
+  /** Replaces the answer with the markdown rendering of `source`. */
+  write: (source: string) => void;
   /** Names the documents the answer cited. An empty list renders nothing. */
   showSources: (sources: Source[]) => void;
   /** Takes the whole turn back out, for a reply that failed. */
@@ -97,8 +100,9 @@ function sourceList(
 
 // The message list. Owns its empty state and its scroll position.
 export function transcript(node: HTMLElement): Transcript {
+  // The page scrolls, not the list, so this is the window's position.
   function scrollToBottom() {
-    node.scrollTop = node.scrollHeight;
+    window.scrollTo(0, document.documentElement.scrollHeight);
   }
 
   // Named rather than written straight into the returned object: a failed
@@ -110,6 +114,9 @@ export function transcript(node: HTMLElement): Transcript {
     scrollToBottom();
     return {
       body,
+      write(source) {
+        body.innerHTML = renderMarkdown(source);
+      },
       showSources(sources) {
         if (sources.length === 0) return;
         item.append(

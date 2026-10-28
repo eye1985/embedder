@@ -1,7 +1,8 @@
+/* Grows to fill the page so the composer sits at the bottom of a short
+   conversation. The document is what scrolls, so this clips nothing -- which
+   is why a list marker, painted outside its content box, is free to hang. */
 .messages {
   flex: 1;
-  min-height: 0;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -75,11 +76,160 @@
   overflow-wrap: anywhere;
 }
 
-.turn-body.pending::after {
+/* An answer is markdown, so its line breaks are in the markup and a literal
+   newline between two blocks is not one of them. */
+.turn.assistant .turn-body {
+  white-space: normal;
+}
+
+/* On the last block rather than the body, so it sits at the end of the
+   sentence being written instead of on a line of its own. :empty covers the
+   gap before the first token lands. */
+.turn-body.pending > :last-child::after,
+.turn-body.pending:empty::after {
   content: "▋";
   margin-left: 1px;
   color: var(--highlight);
   animation: blink 1s steps(2, start) infinite;
+}
+
+/* --- Markdown --------------------------------------------------------------
+   Rendered answers only. Margins collapse to zero at the edges so a turn is
+   not taller than its text, and the vertical rhythm between blocks is the
+   transcript's spacing rather than the browser's. */
+
+.turn-body > :first-child {
+  margin-top: 0;
+}
+
+.turn-body > :last-child {
+  margin-bottom: 0;
+}
+
+.turn-body p,
+.turn-body ul,
+.turn-body ol,
+.turn-body pre,
+.turn-body blockquote,
+.turn-body table {
+  margin-block: var(--sp-3);
+}
+
+/* Tighter than the scale's steps: a heading belongs to the text under it. */
+.turn-body h1,
+.turn-body h2,
+.turn-body h3,
+.turn-body h4 {
+  margin-block: var(--sp-4) var(--sp-2);
+  line-height: 1.3;
+  font-weight: 600;
+}
+
+.turn-body h1 {
+  font-size: var(--fs-title);
+}
+
+.turn-body h2 {
+  font-size: var(--fs-ui);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+
+.turn-body h3,
+.turn-body h4 {
+  font-size: var(--fs-body);
+}
+
+/* Wide enough for the marker, which is painted outside the content box and
+   has only this to sit in. The list starts at the left edge of the message
+   list, and that scrolls, so a marker wider than the indent is cut in half
+   rather than merely crowded -- `10.` needs most of 1.5rem. */
+.turn-body ul,
+.turn-body ol {
+  padding-left: var(--sp-6);
+}
+
+.turn-body li + li {
+  margin-top: var(--sp-1);
+}
+
+/* A list inside a list is one step of the rhythm, not two. */
+.turn-body li > ul,
+.turn-body li > ol {
+  margin-block: var(--sp-1);
+}
+
+.turn-body code {
+  padding: 0.1em 0.3em;
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  background: var(--sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--r-sm);
+}
+
+.turn-body pre {
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--sunken);
+  border: 1px solid var(--rule);
+  border-radius: var(--r);
+  /* A code block is the one thing that may not be rewrapped, so it scrolls. */
+  overflow-x: auto;
+}
+
+/* The block carries the frame; the code inside it is just the text. */
+.turn-body pre code {
+  padding: 0;
+  background: none;
+  border: 0;
+  overflow-wrap: normal;
+  white-space: pre;
+}
+
+.turn-body blockquote {
+  padding-left: var(--sp-4);
+  border-left: 2px solid var(--rule-strong);
+  color: var(--fg-2);
+}
+
+.turn-body a {
+  color: var(--highlight);
+  text-underline-offset: 2px;
+}
+
+.turn-body hr {
+  margin-block: var(--sp-4);
+  border: 0;
+  border-top: 1px solid var(--rule);
+}
+
+.turn-body table {
+  border-collapse: collapse;
+  font-size: var(--fs-small);
+  /* Narrower than the measure if it can be; scrolls only when it cannot. */
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.turn-body th,
+.turn-body td {
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--rule);
+  text-align: left;
+  vertical-align: top;
+}
+
+.turn-body th {
+  background: var(--sunken);
+  font-weight: 600;
+}
+
+.turn-body img {
+  max-width: 100%;
+  border-radius: var(--r);
 }
 
 @keyframes blink {

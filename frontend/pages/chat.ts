@@ -28,8 +28,8 @@ async function ask(prompt: string): Promise<void> {
   const reply = messages.add("assistant", "Assistant");
   reply.body.classList.add("pending");
 
-  // Accumulated here rather than read back off the node: textContent is
-  // nullable, and one assignment per chunk is cheaper than a read and a write.
+  // Accumulated here rather than read back off the node: the node holds
+  // rendered markdown, which is not the source the next token appends to.
   // The raw text is what accumulates, markers and all -- stripping it here
   // would mean re-stripping a string the next token appends to anyway.
   let answer = "";
@@ -42,7 +42,7 @@ async function ask(prompt: string): Promise<void> {
     for await (const { event, data } of readEvents(await askChat(prompt))) {
       if (event === "token") {
         answer += (data as { t: string }).t;
-        reply.body.textContent = withoutMarkers(answer);
+        reply.write(withoutMarkers(answer));
         messages.scrollToBottom();
       } else if (event === "sources") {
         reply.showSources((data as { sources: Source[] }).sources);

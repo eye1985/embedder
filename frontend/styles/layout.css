@@ -10,11 +10,28 @@
   padding-bottom: var(--sp-5);
 }
 
-/* Chat pins to the viewport so the message list scrolls under a fixed
-   composer; the other pages scroll as a whole page. */
+/* Chat scrolls as a whole page, like every other page, so the scrollbar is
+   the window's and sits at its edge rather than down the middle of the
+   column. The header and the composer stay put by sticking rather than by
+   sitting outside a scroll container. The composer carries the bottom
+   padding, which has to be inside the sticky element to stay below it. */
 .app.chat {
-  height: 100dvh;
-  min-height: 0;
+  padding-bottom: 0;
+}
+
+.app.chat .header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+}
+
+.app.chat .composer {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  background: var(--bg);
+  padding-bottom: var(--sp-5);
 }
 
 /* Naming the header keeps it out of the `root` snapshot, so it cross-fades in
