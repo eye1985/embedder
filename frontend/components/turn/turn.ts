@@ -18,6 +18,8 @@ export interface Reply {
 
 export interface Transcript {
   add: (role: Role, label: string, text?: string) => Reply;
+  /** Empties the list, back to the prompt the page was first served with. */
+  reset: () => void;
   scrollToBottom: () => void;
 }
 
@@ -100,9 +102,18 @@ function sourceList(
 
 // The message list. Owns its empty state and its scroll position.
 export function transcript(node: HTMLElement): Transcript {
+  // Kept rather than rebuilt, so switching conversations puts back the same
+  // prompt the template served and this module needs no copy of its wording.
+  const empty = node.querySelector(".empty");
+
   // The page scrolls, not the list, so this is the window's position.
   function scrollToBottom() {
     window.scrollTo(0, document.documentElement.scrollHeight);
+  }
+
+  function reset() {
+    if (empty === null) node.replaceChildren();
+    else node.replaceChildren(empty);
   }
 
   // Named rather than written straight into the returned object: a failed
@@ -130,5 +141,5 @@ export function transcript(node: HTMLElement): Transcript {
     };
   }
 
-  return { add, scrollToBottom };
+  return { add, reset, scrollToBottom };
 }

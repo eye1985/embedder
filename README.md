@@ -100,6 +100,8 @@ test/
       test_refusals.py           No vector table, and someone else's document.
     chat_sources/       What an answer says about where a passage came from.
       test_what_a_source_offers.py  PDF, restored from JSON, or file gone.
+    chat_history/       A stored conversation, and what its answers still cite.
+      test_a_stored_answer_keeps_its_sources.py  Through a delete and a reimport.
     deleting/           Delete means gone: rows, vectors and the file.
       test_deleting_a_document.py   Asserted against the disk, not the reply.
     restore_from_json/  A downloaded export uploaded back.
@@ -181,7 +183,11 @@ so a route can never collide with a page.
 
 | method | route | purpose |
 | ------ | ----- | ------- |
-| `POST` | `/api/chat` | Stream an answer, then its sources. |
+| `POST` | `/api/chat` | Stream an answer, then its sources, and store the turn. |
+| `GET` | `/api/conversations` | Stored conversations, most recently used first. |
+| `GET` | `/api/conversations/{id}` | One transcript, each answer's sources resolved. |
+| `PATCH` | `/api/conversations/{id}` | Rename a conversation. |
+| `DELETE` | `/api/conversations/{id}` | Delete a conversation and its messages. |
 | `GET` | `/api/models` | Registered models, for the upload picker. |
 | `POST` | `/api/upload` | Store a PDF, chunk it, embed it. |
 | `GET` | `/api/documents` | List documents with chunk and vector counts. |
@@ -289,7 +295,8 @@ api/            Speaks HTTP. No SQL of its own, no pipeline.
     from_json/    An export read back in. Split where the database starts:
       parse.py      Checks and takes apart the uploaded bytes. No SQL.
       restore.py    Matches the registry and writes the rows.
-    sources.py    Resolves a stored source_uri to a file on disk.
+    conversations.py  Stored chat history read back: the list, one transcript.
+    sources.py    A source_uri resolved to a file, and stored citations to chips.
     uploads.py    Where an uploaded file lands.
   config.py     CURRENT_USER_ID and the frontend directories.
   schemas.py    Response models. What the generated frontend types come from.
@@ -301,7 +308,9 @@ db/             Talks to Postgres. Every SQL statement lives here.
   vectors.py    Embedding-service factory, cached engines and vector stores.
   setup.py      Migration runner and vector-table DDL. The only place running DDL.
 indexing/       Files into embeddings. extract -> chunk -> embed, pdf.py on top.
-llm/chat.py     Builds the retrieval chain for one user.
+llm/chat.py     Builds the retrieval graph for one user. Holds no history:
+                every turn is handed the conversation it answers against.
+  context_management/  How that history is kept bounded. One strategy is chosen.
 paths.py        PROJECT_ROOT, which every stored source_uri is relative to.
 sql/            Migrations. Vector-table DDL is in db/setup.py.
 test/           Fixtures, fakes and builders; integration/ is one dir per feature.
@@ -335,3 +344,60 @@ is `10 + 5 + 10 = 25` connections per process against a default
 once, not per model, so every model's results stay comparable. Input past 8191
 tokens is averaged into one blurred vector rather than rejected, so retrieval
 degrades silently.
+
+## Chat history
+
+Conversations are stored in `conversations` and `chat_messages`, and that is
+the source of truth: the graph in `llm/chat.py` compiles without a
+checkpointer, so every turn loads the history it answers against and writes
+the turn back when the answer is done. History therefore survives a restart,
+and an answer does not depend on which process served the previous question.
+
+`conversations` also carries the compaction state -- the running summary and
+how many messages it covers -- because that state belongs to the conversation
+rather than to a process. It is written in the same transaction as the
+messages: `summarized` is a count of them, so committing it separately could
+leave it pointing past the end.
+
+A turn is stored whole or not at all. The question and the answer land
+together, so history never holds a question with no reply -- the next turn
+would then send two user messages in a row, which some providers reject. A run
+that fails partway still stores what arrived, matching what the page keeps on
+screen.
+
+### What an answer remembers about its sources
+
+`chat_messages.citations` holds one entry per cited document, best-ranked
+first, each naming the retrieved chunks that document contributed:
+
+```json
+[{"document_id": "...", "chunk_ids": ["...", "..."]}]
+```
+
+Rank is the position. The chunk ids are every retrieved chunk of that
+document, not only the ones a citation marker matched, because that is the set
+the page numbers come from -- storing less would replay an answer with fewer
+pages than it was sent with.
+
+Neither id is a foreign key, which is deliberate. A citation has to outlive
+its rows:
+
+* **Document deleted.** The ids resolve to nothing, so the answer offers no
+  sources -- the text keeps its claims, the chips are gone. `on delete cascade`
+  would instead erase the citation, which looks the same until the next case.
+* **Deleted, then restored from a JSON export.** `restore_document` puts the
+  document back under the id it had and its chunks under theirs, so the stored
+  ids are the ids that come back and the sources return. An `on delete set
+  null` would have broken that link permanently.
+
+Because the ids are re-resolved on every read, a reopened conversation
+describes its documents as they stand now rather than as they stood then: a
+restored document's chips say "from JSON", since restoring brings back the
+text but never the PDF.
+
+A GIN index on `citations` answers the reverse question, deleted document or
+not:
+
+```sql
+select * from chat_messages where citations @> '[{"document_id": "..."}]';
+```

@@ -9,6 +9,14 @@ export type JobStatusOut = Schemas["JobStatus"];
 export type JobOut = Schemas["JobOut"];
 export type ImportResult = Schemas["ImportResult"];
 export type RestoreResult = Schemas["RestoreResult"];
+export type ConversationOut = Schemas["ConversationOut"];
+export type ConversationDetail = Schemas["ConversationDetail"];
+export type MessageOut = Schemas["MessageOut"];
+
+// One document a chat answer cited. The same shape whether it arrives inside
+// the chat event stream or on a reopened conversation, which is why it is
+// declared on the server as `ChatSource` and read from the schema here.
+export type Source = Schemas["ChatSource"];
 
 // Every API URL the frontend knows, in one place and typed from the schema
 // `npm run api-types` generates. A route renamed on the server fails the
@@ -28,22 +36,25 @@ export const rerunJob = (id: number) =>
 export const deleteJob = (id: number) =>
   send<Schemas["DeleteJobResult"]>(`/api/jobs/${id}`, "DELETE");
 
-export const askChat = (prompt: string) => postStream("/api/chat", { prompt });
+// A null `conversationId` starts a conversation. Either way the stream's
+// `conversation` event names the one the turn landed in.
+export const askChat = (prompt: string, conversationId: string | null) =>
+  postStream("/api/chat", { prompt, conversation_id: conversationId });
 
-// One document a chat answer cited. Not generated from the schema: it arrives
-// inside the event stream, which FastAPI does not describe.
-export interface Source {
-  document_id: string;
-  title: string | null;
-  /** What the download arrives as. Null once the stored file is gone. */
-  filename: string | null;
-  /** In the PDF's own numbering, so the first page is 1. */
-  pages: number[];
-  has_source: boolean;
-  /** Where the document's rows came from. "import" means it was restored
-   *  from a JSON export, so there is no PDF behind it by design. */
-  origin: "upload" | "import";
-}
+export const listConversations = () =>
+  getJSON<ConversationOut[]>("/api/conversations");
+
+export const readConversation = (id: string) =>
+  getJSON<ConversationDetail>(`/api/conversations/${id}`);
+
+export const renameConversation = (id: string, title: string) =>
+  send<Schemas["RenameResult"]>(`/api/conversations/${id}`, "PATCH", { title });
+
+export const deleteConversation = (id: string) =>
+  send<Schemas["DeleteConversationResult"]>(
+    `/api/conversations/${id}`,
+    "DELETE",
+  );
 
 export const uploadPdf = (body: FormData) =>
   postForm<ImportResult>("/api/upload", body);

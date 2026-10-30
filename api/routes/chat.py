@@ -3,17 +3,19 @@
 import json
 import logging
 import re
+import uuid
 
-from fastapi import APIRouter
-from langchain_core.messages import HumanMessage
+from fastapi import APIRouter, HTTPException
+from langchain_core.documents import Document
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 
 from api.config import CURRENT_USER_ID
-from api.services.sources import source_path
+from api.services.sources import resolve_sources
 from db.pool import connection
-from db.tables.documents import cited_chunks
+from db.tables.chat import get_conversation, message_rows, store_turn
 from db.tables.embeddings import search_groups
 from db.tables.registry import get_model
 from llm.chat import build_graph, cited_documents
@@ -25,6 +27,9 @@ router = APIRouter()
 
 class Chat(BaseModel):
     prompt: str
+    # Null starts a conversation. Either way the id comes back as a
+    # `conversation` event, which is what the page sends the next turn into.
+    conversation_id: uuid.UUID | None = None
 
 
 def sse(event: str, data: dict) -> str:
@@ -43,8 +48,8 @@ def sse(event: str, data: dict) -> str:
 CITATION = re.compile(r"\[(\d+)\]")
 
 
-def sources(retrieved: list, answer: str) -> list[dict]:
-    """The documents the answer cited, one entry each, best-ranked first.
+def citations_from(retrieved: list[Document], answer: str) -> list[dict]:
+    """What the answer cited, in the shape `chat_messages.citations` stores.
 
     Retrieval cannot tell these apart: it returns the ten chunks closest to
     the question, which is most of the library on a broad question. Only the
@@ -52,123 +57,200 @@ def sources(retrieved: list, answer: str) -> list[dict]:
     reads the numbers back out -- a document it never cited is left out.
 
     The markers themselves are plumbing and never reach the reader: they are
-    stripped out of the answer in the browser. Pages are every retrieved page
-    of the document, shifted into the PDF's own numbering, which starts at 1 --
-    a marker is per document, so it does not say which passage carried a claim.
+    stripped out of the answer in the browser.
 
-    `filename` is what the download actually arrives as, which is why it is
-    sent alongside the title -- the two differ, the title being the stem.
+    One entry per cited document, best-ranked first, each carrying every
+    retrieved chunk of that document rather than only the ones a marker
+    matched. A marker is per document, so it cannot say which passage carried
+    a claim, and the pages a reader is shown come from all of them -- storing
+    less would replay the answer with fewer pages than it was sent with.
 
-    `origin` tells the two fileless cases apart. A restored export never had a
-    PDF here, so its passages came out of the user's own stored chunks and are
-    no less theirs; an upload whose file went missing is a file that should be
-    there and is not. Both are unclickable, and the chip says which.
+    Ids only. Which of them still resolve to a document, and what that
+    document can offer, is `resolve_sources` -- asked again every time the
+    answer is rendered rather than frozen here.
     """
     cited = {int(number) for number in CITATION.findall(answer)}
-    numbered = {
-        document_id: number
+    order = [
+        document_id
         for number, document_id in enumerate(cited_documents(retrieved), 1)
         if number in cited
-    }
-    if not numbered:
+    ]
+    if not order:
         return []
 
-    chunk_ids = [str(document.metadata.get("chunk_id")) for document in retrieved]
-    with connection() as conn:
-        rows = cited_chunks(conn, CURRENT_USER_ID, chunk_ids)
-
-    found: dict[str, dict] = {}
-
-    for _chunk_id, document_id, title, source_uri, origin, page in rows:
-        if document_id not in numbered:
+    chunks: dict[str, list[str]] = {}
+    for document in retrieved:
+        document_id = document.metadata.get("document_id")
+        if document_id is None:
             continue
-        # Resolved against the disk, not just the column: a file deleted from
-        # under its row would otherwise be offered as a link that 404s.
-        stored = source_path(source_uri)
-        source = found.setdefault(
-            document_id,
-            {
-                "title": title,
-                "filename": stored.name if stored else None,
-                "pages": set(),
-                "has_source": stored is not None,
-                "origin": origin,
-            },
+        chunks.setdefault(document_id, []).append(
+            str(document.metadata.get("chunk_id"))
         )
-        if page is not None:
-            source["pages"].add(page + 1)
 
     return [
-        {
-            "document_id": document_id,
-            "title": source["title"],
-            "filename": source["filename"],
-            "pages": sorted(source["pages"]),
-            "has_source": source["has_source"],
-            "origin": source["origin"],
-        }
-        for document_id, source in sorted(
-            found.items(), key=lambda item: numbered[item[0]]
-        )
+        {"document_id": document_id, "chunk_ids": chunks.get(document_id, [])}
+        for document_id in order
     ]
 
 
-# Sync `def`: reading which model searches which document is a blocking
-# query, and the graph is assembled before a single token is streamed.
-# FastAPI runs this in a worker thread and then streams on the event loop.
+def history_messages(rows: list[tuple]) -> list[AnyMessage]:
+    """A stored transcript as the graph's message list.
+
+    The assistant's text is stored as the model wrote it, citation markers and
+    all, so the history it is shown next turn is what it actually said. The
+    browser is what strips them for the reader.
+    """
+    return [
+        HumanMessage(content) if role == "user" else AIMessage(content)
+        for _seq, role, content, _citations in rows
+    ]
+
+
+def store(
+    conversation_id: uuid.UUID | None,
+    question: str,
+    answer: str,
+    retrieved: list[Document],
+    summary: str | None,
+    summarized: int,
+) -> tuple[uuid.UUID, list[dict]]:
+    """Write the turn, then resolve what its answer cited.
+
+    Both on one connection: the sources a reader is sent then describe rows
+    that are committed, rather than rows that could still roll back.
+    """
+    citations = citations_from(retrieved, answer)
+    with connection() as conn:
+        stored_id = store_turn(
+            conn,
+            CURRENT_USER_ID,
+            conversation_id,
+            question,
+            answer,
+            citations,
+            summary=summary,
+            summarized=summarized,
+        )
+        return stored_id, resolve_sources(conn, CURRENT_USER_ID, citations)
+
+
+# Sync `def`: loading the history and reading which model searches which
+# document are blocking queries, and the graph is assembled before a single
+# token is streamed. FastAPI runs this in a worker thread and then streams on
+# the event loop.
 @router.post("/chat")
 def chat(prompt: Chat):
-    """Answer from the user's searchable documents.
+    """Answer from the user's searchable documents, and store the turn.
+
+    The conversation is loaded from `chat_messages` rather than from a
+    checkpointer: stored history is the source of truth, so an answer can be
+    given against a conversation this process has never seen.
 
     Each document is retrieved through the one model it was given, so this
     reads the grouping per request -- changing a document's model has to take
     effect on the next question, not the next restart.
 
     The body is an event stream: a `token` per piece of the answer, then
-    `sources` naming the documents the answer cited, then `done`. Every
-    question is searched, so an empty `sources` means the answer leaned on
-    nothing retrieved -- the passages did not cover the question, or the user
-    has nothing searchable.
+    `conversation` naming the conversation the turn landed in, then `sources`
+    naming the documents the answer cited, then `done`. Every question is
+    searched, so an empty `sources` means the answer leaned on nothing
+    retrieved -- the passages did not cover the question, or the user has
+    nothing searchable.
     """
     with connection() as conn:
+        summary: str | None = None
+        summarized = 0
+        history: list[AnyMessage] = []
+
+        if prompt.conversation_id is not None:
+            found = get_conversation(conn, CURRENT_USER_ID, prompt.conversation_id)
+            if found is None:
+                raise HTTPException(status_code=404, detail="No such conversation.")
+            _id, _title, summary, summarized = found
+            history = history_messages(message_rows(conn, prompt.conversation_id))
+
         groups = {
             get_model(conn, model_id=model_id): document_ids
             for model_id, document_ids in search_groups(conn, CURRENT_USER_ID).items()
         }
 
     graph = build_graph(CURRENT_USER_ID, groups)
-    config = {"configurable": {"thread_id": f"user-{CURRENT_USER_ID}"}}
+
+    # The whole history goes in, because there is no checkpointer holding it
+    # between turns. The compaction state comes with it: `summarized` counts
+    # into this list, so the two have to arrive together.
+    state = {
+        "messages": [*history, HumanMessage(prompt.prompt)],
+        "summary": summary,
+        "summarized": summarized,
+    }
 
     async def stream():
+        # Accumulated only to have something to keep if the run fails partway:
+        # the answer itself is read back off the final state, which is the same
+        # text and is what the citations have to be matched against.
+        streamed: list[str] = []
+        final: dict = {}
+
         # A streaming response commits to 200 before the first token, so a
         # failure here cannot change the status. It goes out as an `error`
         # event instead -- the alternative is a silent truncation that reads
         # like a short answer.
         try:
-            # `messages` mode emits every LLM call in the graph, and the
-            # summariser is one of them -- its notes are not the answer.
-            async for chunk, metadata in graph.astream(
-                {"messages": [HumanMessage(prompt.prompt)]},
-                config=config,
-                stream_mode="messages",
+            # `messages` carries the tokens and `values` the state after each
+            # superstep, the last of which is the finished conversation --
+            # which is how the answer and its chunks are read back without a
+            # checkpointer to ask. `messages` emits every LLM call in the
+            # graph, and the summariser is one of them: its notes are not the
+            # answer.
+            async for mode, payload in graph.astream(
+                state, stream_mode=["messages", "values"]
             ):
+                if mode == "values":
+                    final = payload
+                    continue
+                chunk, metadata = payload
                 if metadata["langgraph_node"] == "answer" and chunk.text:
+                    streamed.append(chunk.text)
                     yield sse("token", {"t": chunk.text})
 
-            # The chunks the answer was built from live in the graph's state,
-            # which is only final once the stream is done. The answer is read
-            # back from there too rather than accumulated here -- the same
-            # text, and the citations have to be matched against all of it.
-            state = await graph.aget_state(config)
-            answer = state.values["messages"][-1].text
-            # Off the loop: resolving chunks to documents is a blocking query,
-            # and this generator runs on the event loop.
-            resolved = await run_in_threadpool(
-                sources, state.values.get("context", []), answer
+            # Off the loop: storing the turn and resolving its chunks to
+            # documents are blocking queries, and this generator runs on the
+            # event loop.
+            stored_id, resolved = await run_in_threadpool(
+                store,
+                prompt.conversation_id,
+                prompt.prompt,
+                final["messages"][-1].text,
+                final.get("context", []),
+                final.get("summary"),
+                final.get("summarized", 0),
             )
+            yield sse("conversation", {"conversation_id": str(stored_id)})
             yield sse("sources", {"sources": resolved})
         except Exception:
             logger.exception("chat stream failed")
+            # Whatever arrived is kept, as the browser keeps it: a half
+            # answered turn is still a turn the user asked, and dropping it
+            # would leave the page showing an exchange the server denies.
+            # The compaction state stored is the one loaded, not the one in
+            # flight -- the run that would have produced a new one is what
+            # just failed.
+            partial = "".join(streamed)
+            if partial:
+                try:
+                    stored_id, _ = await run_in_threadpool(
+                        store,
+                        prompt.conversation_id,
+                        prompt.prompt,
+                        partial,
+                        final.get("context", []),
+                        summary,
+                        summarized,
+                    )
+                    yield sse("conversation", {"conversation_id": str(stored_id)})
+                except Exception:
+                    logger.exception("could not store the partial turn")
             yield sse(
                 "error",
                 {"detail": "The answer could not be completed. See server logs."},

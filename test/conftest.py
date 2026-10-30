@@ -44,7 +44,7 @@ from test.fakes import FakeEmbeddings
 #
 # `users`, `embedding_models` and `schema_migrations` are deliberately absent:
 # they are what the migrations seed, and the tests read them as fixed.
-WRITABLE_TABLES = ["jobs", "documents"]
+WRITABLE_TABLES = ["jobs", "conversations", "documents"]
 
 
 def _create_test_database() -> None:

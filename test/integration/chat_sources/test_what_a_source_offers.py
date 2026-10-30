@@ -13,18 +13,29 @@ and the pair of fields that distinguishes them:
 saying so is the difference between "your own export" and "something is
 missing".
 
-`sources()` is called with what retrieval returned and what the model wrote,
-so the tests hand it both directly. No OpenAI is reached: the answer is a
-literal string and the chunks come out of Postgres.
+The chain under test is the live one in two steps: what the model wrote
+decides which documents are cited (`citations_from`, whose output is also what
+gets stored), and the ids are then resolved against the database and the disk
+(`resolve_sources`). No OpenAI is reached: the answer is a literal string and
+the chunks come out of Postgres.
 """
 
 from langchain_core.documents import Document
 
 from api.config import CURRENT_USER_ID
-from api.routes.chat import sources
+from api.routes.chat import citations_from
+from api.services.sources import resolve_sources
+from db.pool import connection
 from db.tables.documents import chunk_rows
 from llm.chat import _label
 from test.factories import a_document, an_export, restore_from_json
+
+
+def sources(retrieved, answer):
+    """The two halves composed as the chat route composes them."""
+    with connection() as conn:
+        return resolve_sources(conn, CURRENT_USER_ID, citations_from(retrieved, answer))
+
 
 # One citation, so the single document in each test is the one cited. An
 # answer citing nothing reports no sources at all, which is its own case.

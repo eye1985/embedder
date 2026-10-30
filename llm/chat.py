@@ -8,7 +8,6 @@ from langchain_core.documents import Document
 from langchain_core.messages import AnyMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
@@ -40,10 +39,10 @@ _llm: ChatOpenAI | None = None
 _summarizer: ChatOpenAI | None = None
 _llm_lock = threading.Lock()
 
-# One per process, so a conversation survives between requests. Keyed by
-# thread_id, which is per user -- changing a document's model continues the
-# conversation rather than restarting it.
-CHECKPOINTER = InMemorySaver()
+# No checkpointer. A conversation is stored in `conversations` and
+# `chat_messages`, and every turn is handed the history it needs as its
+# starting state -- so an answer does not depend on which process served the
+# previous question, and history outlives a restart.
 
 CONTEXT_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -305,9 +304,11 @@ def build_graph(user_id: int, groups: dict[EmbeddingModel, list[str]]):
     Built per request rather than once at startup: which model searches which
     document is stored state the user can change, and a graph cached at
     startup would keep answering from whatever it was then. The expensive
-    parts -- the vector stores, their engine, the LLM clients, the
-    checkpointer -- are cached underneath, so this is object assembly and no
-    I/O.
+    parts -- the vector stores, their engine, the LLM clients -- are cached
+    underneath, so this is object assembly and no I/O.
+
+    The graph carries no history of its own. It is handed the conversation as
+    its starting state and returns the turn it added, which the caller stores.
     """
 
     def _conversation(state: ChatState) -> Conversation:
@@ -355,4 +356,4 @@ def build_graph(user_id: int, groups: dict[EmbeddingModel, list[str]]):
     builder.add_edge("retrieve", "answer")
     builder.add_edge("answer", END)
 
-    return builder.compile(checkpointer=CHECKPOINTER)
+    return builder.compile()

@@ -1,0 +1,225 @@
+/* The chat sidebar: a new-chat button, then the stored conversations.
+
+   `position`/`top`/`max-height` for the sticky behaviour are in
+   styles/layout.css, where the chat grid that places this is defined. */
+
+.conversations {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  align-self: start;
+  position: sticky;
+  padding-block: var(--sp-5);
+  overflow-y: auto;
+}
+
+/* One per run of rows from the same day. Flush with the row text above it,
+   and given room from the run before so the groups read as groups. */
+.conversation-group {
+  padding: 0 var(--sp-3);
+  margin-block: var(--sp-4) var(--sp-2);
+}
+
+.conversation-group:first-child {
+  margin-top: var(--sp-1);
+}
+
+.conversation-new {
+  flex-shrink: 0;
+  width: 100%;
+}
+
+/* The icon is the affordance, the word is the label, so the icon leads and
+   does not stretch. */
+.conversation-new svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.conversation-items {
+  display: flex;
+  flex-direction: column;
+  /* A hair, not a rule: adjacent hover backgrounds would otherwise meet and
+     read as one block. */
+  gap: 2px;
+}
+
+.conversation-none {
+  margin: 0;
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-small);
+  line-height: 1.45;
+  color: var(--fg-3);
+  text-wrap: pretty;
+}
+
+/* The row is its title and nothing else. The controls are positioned over it
+   so they stay centred whether the title runs to one line or two, and the
+   title reserves their width in its own padding -- so the two can never meet,
+   whether or not the controls happen to be showing. Reserving the space
+   always is what keeps revealing them from reflowing the title under the
+   pointer. */
+.conversation {
+  position: relative;
+  border-radius: var(--r);
+}
+
+.conversation:hover {
+  background: var(--sunken);
+}
+
+/* The one on screen stays marked whether or not the pointer is over it. */
+.conversation.current {
+  background: var(--sunken);
+}
+
+.conversation-open {
+  display: block;
+  width: 100%;
+  /* The right-hand padding is the two controls, their gap and their inset. */
+  padding: var(--sp-3) 4.25rem var(--sp-3) var(--sp-3);
+  font: inherit;
+  text-align: left;
+  color: inherit;
+  background: none;
+  border: 0;
+  border-radius: var(--r);
+  cursor: pointer;
+}
+
+/* The row owns the hover colour, so the button inside it stays transparent --
+   without this the shared `button:hover` rule paints a second, smaller
+   rectangle inside the first. */
+.conversation-open:hover {
+  background: none;
+  border-color: transparent;
+}
+
+.conversation-title {
+  /* Buttons are `white-space: nowrap` in button.css, which a title inherits
+     and must not keep: it is a whole question, and it has to wrap before it
+     can be clamped. */
+  white-space: normal;
+  font-size: var(--fs-small);
+  line-height: 1.4;
+  color: var(--fg-2);
+  /* Two lines, then an ellipsis. One line loses too much of a question; more
+     than two pushes the rest of the list off the screen. */
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  /* A pasted URL or other unbroken run would otherwise set the row's minimum
+     width and widen the whole sidebar. */
+  overflow-wrap: anywhere;
+}
+
+.conversation.current .conversation-title {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+/* Revealed by hovering, or by keyboard focus reaching them -- hidden with
+   opacity rather than `display` so they stay tabbable. */
+.conversation-actions {
+  position: absolute;
+  top: 50%;
+  right: var(--sp-2);
+  transform: translateY(-50%);
+  display: flex;
+  gap: var(--sp-2);
+  opacity: 0;
+  transition: opacity 120ms;
+}
+
+.conversation:hover .conversation-actions,
+.conversation:focus-within .conversation-actions,
+.conversation.current .conversation-actions {
+  opacity: 1;
+}
+
+.conversation-action {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  color: var(--fg-3);
+  background: none;
+  border: 0;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+}
+
+.conversation-action svg {
+  width: 15px;
+  height: 15px;
+}
+
+.conversation-action:hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--surface);
+  border-color: transparent;
+}
+
+.conversation-action.danger:hover:not(:disabled) {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.conversation-action:disabled {
+  opacity: 0.4;
+  cursor: default;
+  background: none;
+}
+
+/* Renaming takes the whole row: the controls are not the task while it is
+   open, and the field needs the width more than they do. */
+.conversation:has(.conversation-rename) .conversation-actions {
+  display: none;
+}
+
+.conversation-rename {
+  width: 100%;
+  margin: 0;
+  padding: var(--sp-2) var(--sp-3);
+  font: inherit;
+  font-size: var(--fs-small);
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--r);
+}
+
+.conversation-rename:focus-visible {
+  outline: 2px solid var(--highlight);
+  outline-offset: -1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .conversation-actions {
+    transition: none;
+  }
+}
+
+/* Narrow: the sidebar becomes a strip above the chat, so nothing has to be
+   squeezed into a column that is no longer there. */
+@media (max-width: 52rem) {
+  .conversations {
+    position: static;
+    max-height: none;
+    padding-bottom: 0;
+  }
+
+  .conversation-items {
+    max-height: 12rem;
+    overflow-y: auto;
+  }
+
+  /* Nothing hovers on a touch screen, so the controls are simply always
+     there. */
+  .conversation-actions {
+    opacity: 1;
+  }
+}

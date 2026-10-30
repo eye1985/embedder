@@ -15,23 +15,83 @@ export interface paths {
         put?: never;
         /**
          * Chat
-         * @description Answer from the user's searchable documents.
+         * @description Answer from the user's searchable documents, and store the turn.
+         *
+         *     The conversation is loaded from `chat_messages` rather than from a
+         *     checkpointer: stored history is the source of truth, so an answer can be
+         *     given against a conversation this process has never seen.
          *
          *     Each document is retrieved through the one model it was given, so this
          *     reads the grouping per request -- changing a document's model has to take
          *     effect on the next question, not the next restart.
          *
          *     The body is an event stream: a `token` per piece of the answer, then
-         *     `sources` naming the documents the answer cited, then `done`. Every
-         *     question is searched, so an empty `sources` means the answer leaned on
-         *     nothing retrieved -- the passages did not cover the question, or the user
-         *     has nothing searchable.
+         *     `conversation` naming the conversation the turn landed in, then `sources`
+         *     naming the documents the answer cited, then `done`. Every question is
+         *     searched, so an empty `sources` means the answer leaned on nothing
+         *     retrieved -- the passages did not cover the question, or the user has
+         *     nothing searchable.
          */
         post: operations["chat_api_chat_post"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
+        trace?: never;
+    };
+    "/api/conversations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Conversations
+         * @description The user's conversations, most recently used first.
+         */
+        get: operations["conversations_api_conversations_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/conversations/{conversation_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Conversation
+         * @description One conversation's transcript, with each answer's sources resolved.
+         */
+        get: operations["conversation_api_conversations__conversation_id__get"];
+        put?: never;
+        post?: never;
+        /**
+         * Remove
+         * @description Delete a conversation and its messages.
+         *
+         *     No document is touched. The citations inside a conversation are plain ids
+         *     rather than references, so deleting the conversation that holds them is
+         *     not a reason to disturb what they pointed at.
+         */
+        delete: operations["remove_api_conversations__conversation_id__delete"];
+        options?: never;
+        head?: never;
+        /**
+         * Rename
+         * @description Rename a conversation.
+         *
+         *     The name starts as the question that opened the conversation, which is a
+         *     description of the first turn and not always of the conversation it became.
+         */
+        patch: operations["rename_api_conversations__conversation_id__patch"];
         trace?: never;
     };
     "/api/models": {
@@ -426,6 +486,75 @@ export interface components {
         Chat: {
             /** Prompt */
             prompt: string;
+            /** Conversation Id */
+            conversation_id?: string | null;
+        };
+        /**
+         * ChatSource
+         * @description One document a chat answer cited.
+         *
+         *     Also the shape the `/chat` stream's `sources` event carries. That endpoint
+         *     streams, so it is not in the schema itself -- declaring the shape here is
+         *     what lets the frontend type both the stream and a reopened conversation
+         *     from one definition instead of hand-writing one of them.
+         */
+        ChatSource: {
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /** Title */
+            title: string | null;
+            /** Filename */
+            filename: string | null;
+            /** Pages */
+            pages: number[];
+            /** Has Source */
+            has_source: boolean;
+            /**
+             * Origin
+             * @enum {string}
+             */
+            origin: "upload" | "import";
+        };
+        /** ConversationDetail */
+        ConversationDetail: {
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /** Title */
+            title: string | null;
+            /** Messages */
+            messages: components["schemas"]["MessageOut"][];
+        };
+        /** ConversationOut */
+        ConversationOut: {
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /** Title */
+            title: string | null;
+            /** Created At */
+            created_at: string;
+            /** Updated At */
+            updated_at: string;
+            /** Messages */
+            messages: number;
+        };
+        /** DeleteConversationResult */
+        DeleteConversationResult: {
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /** Deleted */
+            deleted: boolean;
         };
         /** DeleteDocumentResult */
         DeleteDocumentResult: {
@@ -595,6 +724,20 @@ export interface components {
             /** Finished Seconds Ago */
             finished_seconds_ago: number;
         };
+        /** MessageOut */
+        MessageOut: {
+            /** Seq */
+            seq: number;
+            /**
+             * Role
+             * @enum {string}
+             */
+            role: "user" | "assistant";
+            /** Content */
+            content: string;
+            /** Sources */
+            sources: components["schemas"]["ChatSource"][];
+        };
         /** ModelOut */
         ModelOut: {
             /** Table Name */
@@ -618,6 +761,21 @@ export interface components {
         ReEmbed: {
             /** Models */
             models?: string[] | null;
+        };
+        /** Rename */
+        Rename: {
+            /** Title */
+            title: string;
+        };
+        /** RenameResult */
+        RenameResult: {
+            /**
+             * Conversation Id
+             * Format: uuid
+             */
+            conversation_id: string;
+            /** Title */
+            title: string;
         };
         /** RerunResult */
         RerunResult: {
@@ -726,6 +884,123 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    conversations_api_conversations_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationOut"][];
+                };
+            };
+        };
+    };
+    conversation_api_conversations__conversation_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationDetail"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remove_api_conversations__conversation_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeleteConversationResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rename_api_conversations__conversation_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                conversation_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Rename"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RenameResult"];
                 };
             };
             /** @description Validation Error */

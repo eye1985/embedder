@@ -14,9 +14,14 @@ returns a zip, and a single document's export is a file download -- none are
 read as JSON by the frontend, which reaches them through plain links. The
 reverse of that download does have a model here: restoring an export returns
 JSON the documents page reads.
+
+`ChatSource` is the exception to that. It is what the `/chat` stream's
+`sources` event carries as well as what a reopened conversation returns, so
+it is declared once here and the frontend types both from it.
 """
 
 import uuid
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -151,3 +156,55 @@ class SearchableResult(BaseModel):
 class SearchModelResult(BaseModel):
     document_id: uuid.UUID
     search_model: str
+
+
+class ChatSource(BaseModel):
+    """One document a chat answer cited.
+
+    Also the shape the `/chat` stream's `sources` event carries. That endpoint
+    streams, so it is not in the schema itself -- declaring the shape here is
+    what lets the frontend type both the stream and a reopened conversation
+    from one definition instead of hand-writing one of them.
+    """
+
+    document_id: uuid.UUID
+    title: str | None
+    filename: str | None
+    pages: list[int]
+    has_source: bool
+    # Declared as the two values `documents.origin` allows, so the generated
+    # type is the union the sources panel switches on rather than `string`.
+    origin: Literal["upload", "import"]
+
+
+class ConversationOut(BaseModel):
+    conversation_id: uuid.UUID
+    title: str | None
+    created_at: str
+    updated_at: str
+    messages: int
+
+
+class MessageOut(BaseModel):
+    seq: int
+    role: Literal["user", "assistant"]
+    # As stored: an answer keeps the citation markers the model wrote, which
+    # the browser strips for the reader.
+    content: str
+    sources: list[ChatSource]
+
+
+class ConversationDetail(BaseModel):
+    conversation_id: uuid.UUID
+    title: str | None
+    messages: list[MessageOut]
+
+
+class RenameResult(BaseModel):
+    conversation_id: uuid.UUID
+    title: str
+
+
+class DeleteConversationResult(BaseModel):
+    conversation_id: uuid.UUID
+    deleted: bool

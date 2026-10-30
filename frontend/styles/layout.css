@@ -14,24 +14,80 @@
    the window's and sits at its edge rather than down the middle of the
    column. The header and the composer stay put by sticking rather than by
    sitting outside a scroll container. The composer carries the bottom
-   padding, which has to be inside the sticky element to stay below it. */
+   padding, which has to be inside the sticky element to stay below it.
+
+   It is also the one page with a sidebar, so it lays out as a grid rather
+   than a column: the header spans, the conversation list runs down the left,
+   and the messages and the composer share the right. Every child is placed
+   explicitly -- auto-placement would put the sidebar wherever the template
+   happens to declare it. Wider than the other pages by the width of the
+   sidebar, so the reading column itself stays the size it was.
+
+   `--header-h` is the sticky header's height, measured by the chat page's
+   script. The sidebar sticks below the header rather than under it, and
+   nothing in CSS can read an element's height. It falls back to 0, so the
+   layout is merely imperfect before the script runs, not broken. */
 .app.chat {
+  max-width: 70rem;
+  display: grid;
+  grid-template-columns: 18rem minmax(0, 1fr);
+  grid-template-rows: auto 1fr auto;
+  column-gap: var(--sp-6);
   padding-bottom: 0;
 }
 
 .app.chat .header {
+  grid-column: 1 / -1;
+  grid-row: 1;
   position: sticky;
   top: 0;
   z-index: 2;
   background: var(--bg);
 }
 
+.app.chat .conversations {
+  grid-column: 1;
+  grid-row: 2 / 4;
+  top: var(--header-h, 0px);
+  max-height: calc(100dvh - var(--header-h, 0px));
+}
+
+.app.chat .messages {
+  grid-column: 2;
+  grid-row: 2;
+}
+
 .app.chat .composer {
+  grid-column: 2;
+  grid-row: 3;
   position: sticky;
   bottom: 0;
   z-index: 2;
   background: var(--bg);
   padding-bottom: var(--sp-5);
+}
+
+/* Too narrow for two columns: the sidebar becomes a strip above the chat. */
+@media (max-width: 52rem) {
+  .app.chat {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto 1fr auto;
+  }
+
+  .app.chat .conversations {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .app.chat .messages {
+    grid-column: 1;
+    grid-row: 3;
+  }
+
+  .app.chat .composer {
+    grid-column: 1;
+    grid-row: 4;
+  }
 }
 
 /* Naming the header keeps it out of the `root` snapshot, so it cross-fades on
