@@ -1,7 +1,10 @@
 /* Page shell and the containers pages lay their sections out with. */
 
+/* One width for every page. The chat sidebar changes what fills the shell,
+   never the shell itself, so the heading, the nav and the rule under them are
+   in the same place from page to page -- navigating moves nothing. */
 .app {
-  max-width: 52rem;
+  max-width: 70rem;
   margin-inline: auto;
   min-height: 100dvh;
   display: flex;
@@ -16,19 +19,17 @@
    sitting outside a scroll container. The composer carries the bottom
    padding, which has to be inside the sticky element to stay below it.
 
-   It is also the one page with a sidebar, so it lays out as a grid rather
-   than a column: the header spans, the conversation list runs down the left,
-   and the messages and the composer share the right. Every child is placed
-   explicitly -- auto-placement would put the sidebar wherever the template
-   happens to declare it. Wider than the other pages by the width of the
-   sidebar, so the reading column itself stays the size it was.
+   It is also the one page with a sidebar, so it lays the shell out as a grid
+   rather than a column: the header spans, the conversation list runs down the
+   left, and the messages and the composer share the right. Every child is
+   placed explicitly -- auto-placement would put the sidebar wherever the
+   template happens to declare it.
 
    `--header-h` is the sticky header's height, measured by the chat page's
    script. The sidebar sticks below the header rather than under it, and
    nothing in CSS can read an element's height. It falls back to 0, so the
    layout is merely imperfect before the script runs, not broken. */
 .app.chat {
-  max-width: 70rem;
   display: grid;
   grid-template-columns: 18rem minmax(0, 1fr);
   grid-template-rows: auto 1fr auto;
