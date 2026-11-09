@@ -300,6 +300,24 @@ def get_job(conn: psycopg.Connection, user_id: int, job_id: int) -> tuple:
     return row
 
 
+def job_running_on(
+    conn: psycopg.Connection,
+    user_id: int,
+    document_id: uuid.UUID,
+    source_uri: str | None,
+) -> bool:
+    """Whether a running job is writing this document.
+
+    An upload has no document_id until it finishes, so it is matched on
+    source_uri.
+    """
+    return conn.execute(
+        "select exists (select 1 from jobs where user_id = %s "
+        "and status = 'running' and (document_id = %s or source_uri = %s))",
+        (user_id, document_id, source_uri),
+    ).fetchone()[0]
+
+
 def delete_job(conn: psycopg.Connection, user_id: int, job_id: int) -> None:
     """Forget a job row.
 

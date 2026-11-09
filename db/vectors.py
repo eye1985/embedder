@@ -13,6 +13,9 @@ from langchain_openai import OpenAIEmbeddings
 
 from db.tables.registry import EmbeddingModel
 
+# A whole document is embedded in one call, so this is longer than chat's.
+EMBEDDING_TIMEOUT = 120
+
 _services: dict[int, Embeddings] = {}
 _lock = threading.Lock()
 
@@ -20,7 +23,12 @@ _lock = threading.Lock()
 def get_embeddings(model: EmbeddingModel) -> Embeddings:
     """Resolve a registry row to the embedding service that produced it."""
     if model.provider == "openai":
-        return OpenAIEmbeddings(model=model.model_name, dimensions=model.dimensions)
+        return OpenAIEmbeddings(
+            model=model.model_name,
+            dimensions=model.dimensions,
+            timeout=EMBEDDING_TIMEOUT,
+            max_retries=3,
+        )
 
     raise ValueError(
         f"Unknown provider {model.provider!r}. Add it to get_embeddings()."

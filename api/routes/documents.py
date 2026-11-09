@@ -6,8 +6,10 @@ around it -- every one scoped to the current user, so another user's
 document is reported missing rather than refused.
 """
 
+import re
 import uuid
 from typing import Annotated
+from urllib.parse import quote
 
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 from pydantic import BaseModel
@@ -43,7 +45,7 @@ from api.services.from_json import (
     parse_export,
     restore_export,
 )
-from api.services.jobs import begin_job, finish_job
+from api.services.jobs import begin_job, finish_job, job_running_on
 from api.services.sources import source_path
 from api.services.uploads import read_upload
 from db.pool import connection
@@ -67,8 +69,16 @@ class ReEmbed(BaseModel):
 
 
 def attachment(filename: str) -> dict[str, str]:
-    """Headers that make a response save to disk under `filename`."""
-    return {"Content-Disposition": f'attachment; filename="{filename}"'}
+    """Headers that make a response save to disk under `filename`.
+
+    `filename*` carries the real name. The plain `filename` is printable ASCII
+    only: a `"` would end the value, and headers cannot hold most of Unicode.
+    """
+    fallback = re.sub(r'[^\x20-\x7e]|["\\]', "_", filename)
+    return {
+        "Content-Disposition": f'attachment; filename="{fallback}"; '
+        f"filename*=UTF-8''{quote(filename)}"
+    }
 
 
 # Sync `def` for the same reason as POST /upload: psycopg blocks, so FastAPI
@@ -299,9 +309,7 @@ def set_document_search_model(
 
 # Sync `def` for the same reason as POST /upload: this calls the embedding API.
 @router.post("/documents/{document_id}/embeddings", response_model=EmbedResult)
-def embed_document_endpoint(
-    document_id: uuid.UUID, body: ReEmbed, user_id: AdminUser
-):
+def embed_document_endpoint(document_id: uuid.UUID, body: ReEmbed, user_id: AdminUser):
     """Embed an existing document with one or more models.
 
     How a document gains a model it was not uploaded with, and how one emptied
@@ -359,12 +367,22 @@ def delete_document_endpoint(document_id: uuid.UUID, user_id: AdminUser):
 
     A document imported from sample/ keeps its file -- those are the repo's,
     not the user's.
+
+    Refused with 409 while a job is writing it: the job would fail on the
+    missing rows after the embedding API was already paid.
     """
     with connection() as conn:
         try:
-            return delete_document(conn, user_id, document_id)
+            _, _, _, source_uri, _ = get_document(conn, user_id, document_id)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
+        if job_running_on(conn, user_id, document_id, source_uri):
+            raise HTTPException(
+                409,
+                "A job is still writing this document. Wait for it to finish, "
+                "or clear it from the jobs page.",
+            )
+        return delete_document(conn, user_id, document_id)
 
 
 @router.delete(

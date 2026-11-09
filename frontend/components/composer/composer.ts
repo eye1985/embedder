@@ -12,6 +12,18 @@ export function composer(
 ): Composer {
   const field = need(form.querySelector("textarea"), "composer textarea");
   const button = need(form.querySelector("button"), "composer button");
+  const counter = need(
+    form.querySelector<HTMLElement>(".composer-count"),
+    "composer counter",
+  );
+
+  // Same unit as `maxlength`, UTF-16 code units, so the count matches what the
+  // field allows.
+  function count() {
+    const limit = field.maxLength;
+    counter.textContent = `${field.value.length} / ${limit}`;
+    counter.classList.toggle("near", field.value.length >= limit * 0.9);
+  }
 
   function autoGrow() {
     field.style.height = "auto";
@@ -22,8 +34,12 @@ export function composer(
       field.scrollHeight > field.clientHeight ? "auto" : "hidden";
   }
 
-  field.addEventListener("input", autoGrow);
+  field.addEventListener("input", () => {
+    autoGrow();
+    count();
+  });
   autoGrow();
+  count();
 
   field.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey) {
@@ -39,6 +55,7 @@ export function composer(
 
     field.value = "";
     autoGrow();
+    count();
     button.disabled = true;
     onSubmit(prompt);
   });

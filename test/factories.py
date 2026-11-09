@@ -29,6 +29,7 @@ def a_document(
     source_uri: str | None = None,
     metadata: dict | None = None,
     user_id: int = TEST_USER_ID,
+    visibility: str = "private",
 ) -> uuid.UUID:
     """A stored document with `chunks` chunks of distinct text, and no vectors.
 
@@ -47,9 +48,21 @@ def a_document(
         ],
         title=title,
         source_uri=source_uri if source_uri is not None else f"uploads/{title}.pdf",
+        visibility=visibility,
     )
     conn.commit()
     return document_id
+
+
+def another_user(conn: psycopg.Connection, name: str = "bob") -> int:
+    """A second, non-admin account. Its id."""
+    (user_id,) = conn.execute(
+        "insert into users (auth0_sub, email, upload_model_id) "
+        "values (%s, %s, 1) returning id",
+        (f"test|{name}", f"{name}@example.com"),
+    ).fetchone()
+    conn.commit()
+    return user_id
 
 
 def a_job(

@@ -148,6 +148,8 @@ def clean_tables(database):
     """
     with connection() as conn:
         conn.execute(f"truncate {', '.join(WRITABLE_TABLES)} restart identity cascade")
+        # Users a test added; the seeded test user stays.
+        conn.execute("delete from users where id <> %s", (TEST_USER_ID,))
         conn.commit()
     yield
 

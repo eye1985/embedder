@@ -34,6 +34,9 @@ const sidebar =
 // or to return to.
 let current: string | null = null;
 let conversations: ConversationOut[] = [];
+// Bumped whenever another conversation is put on screen, so an answer still
+// streaming into the old one does not claim `current` when it lands.
+let shown = 0;
 
 // The sticky sidebar has to sit below the sticky header, and CSS cannot read
 // an element's height. Watched rather than measured once: the header wraps its
@@ -78,6 +81,7 @@ async function open(id: string): Promise<void> {
     return;
   }
 
+  shown++;
   messages.reset();
   for (const message of detail.messages) {
     if (message.role === "user") {
@@ -99,6 +103,7 @@ async function open(id: string): Promise<void> {
 }
 
 function startNew(): void {
+  shown++;
   current = null;
   messages.reset();
   showInUrl(null);
@@ -132,6 +137,7 @@ async function remove(id: string): Promise<boolean> {
 
 async function ask(prompt: string): Promise<void> {
   messages.add("user", "You", prompt);
+  const asked = shown;
 
   const reply = messages.add("assistant", "Assistant");
   reply.body.classList.add("pending");
@@ -156,12 +162,12 @@ async function ask(prompt: string): Promise<void> {
       if (event === "token") {
         answer += (data as { t: string }).t;
         reply.write(answer);
-        messages.scrollToBottom();
+        if (asked === shown) messages.scrollToBottom();
       } else if (event === "conversation") {
         landed = (data as { conversation_id: string }).conversation_id;
       } else if (event === "sources") {
         reply.showSources((data as { sources: Source[] }).sources);
-        messages.scrollToBottom();
+        if (asked === shown) messages.scrollToBottom();
       } else if (event === "error") {
         failed = (data as { detail: string }).detail;
       } else if (event === "done") {
@@ -180,6 +186,10 @@ async function ask(prompt: string): Promise<void> {
   // reloaded rather than guessed at: a new conversation appears with the name
   // the server gave it, and an existing one moves to the top because it was
   // just talked in.
+  if (asked !== shown) {
+    void refresh().catch(report);
+    return;
+  }
   if (landed !== null) {
     current = landed;
     showInUrl(landed);

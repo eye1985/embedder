@@ -54,11 +54,13 @@ const md = new Marked({
       return `<a href="${escape(url)}"${name} target="_blank" rel="noreferrer noopener">${text}</a>`;
     },
 
-    image({ href, title, text }) {
+    // A link, never an <img>: an image loads on render, so a prompt-injected
+    // URL could carry the conversation off to its host unclicked.
+    image({ href, text }) {
       const url = safeHref(href);
-      if (url === null) return escape(text);
-      const name = title ? ` title="${escape(title)}"` : "";
-      return `<img src="${escape(url)}" alt="${escape(text)}"${name}>`;
+      const label = escape(text || href);
+      if (url === null) return label;
+      return `<a href="${escape(url)}" target="_blank" rel="noreferrer noopener">${label}</a>`;
     },
   },
 });

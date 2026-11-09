@@ -43,3 +43,11 @@
   color: var(--fg-3);
   text-align: right;
 }
+
+.composer-count {
+  font-variant-numeric: tabular-nums;
+}
+
+.composer-count.near {
+  color: var(--danger);
+}

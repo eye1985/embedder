@@ -15,7 +15,6 @@ from auth0_fastapi.server.routes import router as auth0_router
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from psycopg_pool import PoolTimeout
-from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import JSONResponse, Response
 
 from api.assets import AssetsNotBuilt
@@ -52,8 +51,14 @@ async def lifespan(app: FastAPI):
         close_pool()
 
 
-app = FastAPI(lifespan=lifespan)
-app.add_middleware(SessionMiddleware, secret_key=os.environ["AUTH0_SECRET"])
+# Off unless asked for: the schema maps every admin endpoint.
+docs = os.getenv("API_DOCS") == "1"
+app = FastAPI(
+    lifespan=lifespan,
+    docs_url="/docs" if docs else None,
+    redoc_url="/redoc" if docs else None,
+    openapi_url="/openapi.json" if docs else None,
+)
 
 auth0_config = Auth0Config(
     domain=os.environ["AUTH0_DOMAIN"],
@@ -123,7 +128,7 @@ async def unhandled_handler(request: Request, exc: Exception):
     """Anything not already mapped to a status.
 
     The exception text is deliberately NOT returned: a psycopg or SQLAlchemy
-    error can carry the connection string, and these endpoints have no auth.
+    error can carry the connection string, and chat is open to anyone.
     The type is enough to recognise, and the traceback goes to the log.
     """
     logger.exception("unhandled error on %s %s", request.method, request.url.path)

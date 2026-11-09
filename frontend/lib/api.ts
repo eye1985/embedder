@@ -106,9 +106,11 @@ const REVOKE_AFTER_MS = 10_000;
 
 // Every download route sets `attachment; filename="..."`. Read back here
 // because a blob URL has no name of its own -- without this the file saves as
-// the URL's UUID.
+// the URL's UUID. `filename*` is the real name; `filename` an ASCII fallback.
 function attachmentName(response: Response): string {
   const header = response.headers.get("Content-Disposition") ?? "";
+  const encoded = /filename\*=UTF-8''([^;]+)/.exec(header)?.[1];
+  if (encoded) return decodeURIComponent(encoded);
   return /filename="([^"]+)"/.exec(header)?.[1] ?? "download";
 }
 

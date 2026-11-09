@@ -86,8 +86,8 @@ def _store(
     Committed before returning because embedding is what happens next, and the
     embedding API is called outside any transaction.
     """
-    # Imported here rather than at module scope: extract pulls in docling,
-    # which is slow to import and not needed to serve chat.
+    # Imported here rather than at module scope: the PDF layout model is not
+    # needed to serve chat.
     from indexing.extract import simple_extractor
 
     texts = simple_extractor(str(pdf))

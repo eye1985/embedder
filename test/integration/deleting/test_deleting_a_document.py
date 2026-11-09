@@ -16,7 +16,7 @@ same name is refused by a document row that no longer exists.
 """
 
 from db.tables.documents import count_chunks
-from test.factories import a_document, vector_count
+from test.factories import a_document, a_job, vector_count
 
 
 def test_deleting_removes_the_pdf_and_everything_in_the_database(
@@ -69,3 +69,21 @@ def test_deleting_a_document_with_no_stored_file_still_deletes_the_rows(
     conn.rollback()
     assert count_chunks(conn, document_id) == 0
     assert vector_count(conn, small_model, document_id) == 0
+
+
+def test_a_document_a_job_is_writing_is_not_deleted(conn, client):
+    document_id = a_document(conn, title="Nutrition", chunks=2)
+    a_job(conn, kind="embed", document_id=document_id)
+
+    response = client.delete(f"/api/documents/{document_id}")
+
+    assert response.status_code == 409
+    conn.rollback()
+    assert count_chunks(conn, document_id) == 2
+
+
+def test_a_document_an_upload_is_writing_is_not_deleted(conn, client):
+    document_id = a_document(conn, title="Nutrition", source_uri="uploads/1/n.pdf")
+    a_job(conn, kind="upload", source_uri="uploads/1/n.pdf")
+
+    assert client.delete(f"/api/documents/{document_id}").status_code == 409

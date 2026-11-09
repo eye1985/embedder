@@ -198,12 +198,19 @@ def _chunks(payload: dict, models: list[ExportedModel]) -> list[ExportedChunk]:
                 continue
             vectors[label] = _vector(value, model, f"{where}.embeddings.{label}")
 
+        metadata = _mapping(row.get("metadata") or {}, f"{where}.metadata")
+        # Chat casts it with `::int`, so anything else breaks every search
+        # that reaches this chunk.
+        page = metadata.get("page")
+        if page is not None and (type(page) is not int or not 0 <= page < 2**31):
+            raise InvalidExport(f"{where}.metadata.page must be a whole number.")
+
         chunks.append(
             ExportedChunk(
                 chunk_id=chunk_id,
                 chunk_index=chunk_index,
                 content=_require(row, "content", str, where),
-                metadata=_mapping(row.get("metadata") or {}, f"{where}.metadata"),
+                metadata=metadata,
                 embeddings=vectors,
             )
         )

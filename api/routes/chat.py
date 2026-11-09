@@ -7,7 +7,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from starlette.responses import StreamingResponse
 
@@ -24,8 +24,12 @@ logger = logging.getLogger("api")
 router = APIRouter()
 
 
+MAX_PROMPT_CHARS = 3_000
+
+
 class Chat(BaseModel):
-    prompt: str
+    # Capped so a turn plus the kept history stays far below the model's context.
+    prompt: str = Field(min_length=1, max_length=MAX_PROMPT_CHARS)
     # Null starts a conversation. Either way the id comes back as a
     # `conversation` event, which is what the page sends the next turn into.
     conversation_id: uuid.UUID | None = None

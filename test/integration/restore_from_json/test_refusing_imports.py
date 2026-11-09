@@ -226,3 +226,16 @@ def test_an_import_waits_for_the_job_slot(conn, client):
     assert response.status_code == 409
     assert reason(response) is None
     assert "already in progress" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("page", ["3", 1.5, -1, True])
+def test_a_page_that_is_not_a_whole_number_is_refused(client, an_exported_file, page):
+    """Chat casts the page to an int, so one that is not would break every
+    search reaching the chunk."""
+    exported = json.loads(an_exported_file)
+    exported["chunks"][0]["metadata"]["page"] = page
+
+    response = restore_from_json(client, json.dumps(exported).encode())
+
+    assert response.status_code == 422
+    assert "page" in response.json()["detail"]

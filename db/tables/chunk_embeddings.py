@@ -129,8 +129,8 @@ def nearest(
     """The chunks closest to `query_vector`, best first:
     (chunk_id, content, vector, distance).
 
-    Restricted to `document_ids`. The filter is applied as the index is walked,
-    so with many documents switched off a search can return fewer than `limit`.
+    Restricted to `document_ids`. HNSW returns at most `ef_search` rows before
+    that filter, so iterative scan keeps walking the index until `limit` match.
 
     The vector comes back as text for the caller that re-ranks with it (MMR).
     """
@@ -156,5 +156,9 @@ def nearest(
         cast=cast,
         operator=sql.SQL(OPERATORS[model.distance]),
         model_id=sql.Literal(model.id),
+    )
+    conn.execute("set local hnsw.iterative_scan = relaxed_order")
+    conn.execute(
+        sql.SQL("set local hnsw.ef_search = {}").format(sql.Literal(max(limit, 100)))
     )
     return conn.execute(query, (_literal(query_vector), document_ids, limit)).fetchall()

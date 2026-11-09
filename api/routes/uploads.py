@@ -31,8 +31,8 @@ logger = logging.getLogger("api")
 router = APIRouter()
 
 
-def discard_upload(conn, user_id: int, pdf):
-    """Undo a half-finished upload.
+def discard_upload(conn, user_id: int, pdf) -> bool:
+    """Undo a half-finished upload. Returns whether nothing is left behind.
 
     `import_pdf` commits the document and its chunks before embedding starts --
     it has to, because the embedding API is called outside any transaction. So
@@ -40,17 +40,17 @@ def discard_upload(conn, user_id: int, pdf):
     cannot reach, and it has to be deleted explicitly. Without this the user is stuck: the row makes
     the filename taken, so re-uploading returns 409.
     """
-    document_id = find_document(conn, user_id, str(pdf.relative_to(PROJECT_ROOT)))
-    if document_id is None:
-        pdf.unlink(missing_ok=True)
-        return
+    # The failure may have left the transaction aborted.
+    conn.rollback()
     try:
-        delete_document(conn, user_id, document_id)
-        # Committed here because the caller is about to raise, and the
-        # surrounding context manager would otherwise roll this back too.
-        conn.commit()
+        document_id = find_document(conn, user_id, str(pdf.relative_to(PROJECT_ROOT)))
+        if document_id is not None:
+            delete_document(conn, user_id, document_id)
+        pdf.unlink(missing_ok=True)
+        return True
     except Exception:
         logger.exception("could not clean up failed upload %s", pdf.name)
+        return False
 
 
 # Defined with `def`, not `async def`: extraction and the embedding API call
@@ -128,16 +128,20 @@ def upload_endpoint(
                 pdf.unlink(missing_ok=True)
                 raise HTTPException(422, str(exc)) from exc
             except Exception as exc:
-                discard_upload(conn, user_id, pdf)
+                cleaned = discard_upload(conn, user_id, pdf)
                 # Distinguish "this provider is not usable here" from "the call
                 # to it failed": the first is configuration, the second upstream.
                 if isinstance(exc, RuntimeError | ValueError):
                     logger.error("embedding unavailable for %s: %s", name, exc)
                     raise HTTPException(503, str(exc)) from exc
                 logger.exception("embedding failed for %s", name)
+                outcome = (
+                    "Nothing was stored."
+                    if cleaned
+                    else "Delete the document from the documents page before retrying."
+                )
                 raise HTTPException(
-                    502,
-                    f"Embedding failed ({type(exc).__name__}). Nothing was stored.",
+                    502, f"Embedding failed ({type(exc).__name__}). {outcome}"
                 ) from exc
 
         finish_job(job_id, result=result)

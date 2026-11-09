@@ -18,6 +18,7 @@ from fastapi.templating import Jinja2Templates
 from api.assets import assets
 from api.auth.users import Viewer
 from api.config import FRONTEND_DIR, STATIC_DIR, TEMPLATES_DIR
+from api.routes.chat import MAX_PROMPT_CHARS
 
 router = APIRouter(include_in_schema=False)
 
@@ -92,6 +93,7 @@ async def chat_page(request: Request, signed_in: Viewer):
         "/",
         signed_in=signed_in is not None,
         admin=signed_in is not None and signed_in[1],
+        max_prompt=MAX_PROMPT_CHARS,
     )
 
 

@@ -28,11 +28,12 @@
 
 <form id="form" class="composer">
   <div class="composer-shell">
-    <textarea rows="1" placeholder="Ask about your documents&hellip;" autofocus></textarea>
+    <textarea rows="1" placeholder="Ask about your documents&hellip;" maxlength="{{ max_prompt }}" autofocus></textarea>
     <button class="button primary" type="submit">Send</button>
   </div>
   <p class="composer-hint">
     Enter to send &middot; Shift + Enter for a new line
+    &middot; <span class="composer-count"></span>
   </p>
 </form>
 {% endblock %}

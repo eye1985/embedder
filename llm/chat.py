@@ -39,6 +39,9 @@ CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")
 # model that answers.
 UTILITY_MODEL = os.getenv("UTILITY_MODEL", "gpt-4o-mini")
 
+# Seconds before an OpenAI call is abandoned; the SDK default is 600.
+LLM_TIMEOUT = 60
+
 # When a passage is shown as a source. Both must hold.
 # Max cosine distance between the question and the passage.
 SOURCE_MAX_DISTANCE = 0.75
@@ -122,7 +125,13 @@ def _chat_llm() -> ChatOpenAI:
     global _llm
     with _llm_lock:
         if _llm is None:
-            _llm = ChatOpenAI(model=CHAT_MODEL, temperature=0, streaming=True)
+            _llm = ChatOpenAI(
+                model=CHAT_MODEL,
+                temperature=0,
+                streaming=True,
+                timeout=LLM_TIMEOUT,
+                max_retries=2,
+            )
         return _llm
 
 
@@ -137,7 +146,11 @@ def _summary_llm() -> ChatOpenAI:
     with _llm_lock:
         if _summarizer is None:
             _summarizer = ChatOpenAI(
-                model=UTILITY_MODEL, temperature=0, disable_streaming=True
+                model=UTILITY_MODEL,
+                temperature=0,
+                disable_streaming=True,
+                timeout=LLM_TIMEOUT,
+                max_retries=2,
             )
         return _summarizer
 

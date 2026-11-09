@@ -141,7 +141,10 @@ def delete_embeddings(
 def delete_document(
     conn: psycopg.Connection, user_id: int, document_id: uuid.UUID
 ) -> dict:
-    """Delete a document, its chunks, its vectors, and its uploaded PDF."""
+    """Delete a document, its chunks, its vectors, and its uploaded PDF.
+
+    Commits.
+    """
     _, _, title, source_uri, _ = get_document(conn, user_id, document_id)
 
     # Counted before the delete -- afterwards there is nothing left to count.
@@ -153,6 +156,9 @@ def delete_document(
     }
 
     delete_document_rows(conn, user_id, document_id)
+    # Committed before the file goes, so a failed commit cannot leave rows
+    # pointing at a deleted PDF.
+    conn.commit()
 
     return {
         "document_id": str(document_id),

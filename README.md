@@ -323,6 +323,7 @@ static/         Build output. Git-ignored; npm run build recreates it.
 | `AUTH0_SECRET` | -- | Required. Signs the session cookie. |
 | `APP_BASE_URL` | -- | Required. Where Auth0 sends the user back, e.g. `http://localhost:8000`. |
 | `VITE_DEV_SERVER` | -- | Serve assets from Vite instead of `static/`. |
+| `API_DOCS` | -- | `1` serves `/docs`, `/redoc` and `/openapi.json`. Leave unset in production. |
 | `DB_POOL_MIN_SIZE` / `DB_POOL_MAX_SIZE` | `1` / `10` | psycopg pool bounds. |
 | `DB_POOL_TIMEOUT` | `30` | Seconds to wait for a free connection. |
 

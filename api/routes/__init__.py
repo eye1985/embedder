@@ -10,7 +10,16 @@ appear in the OpenAPI schema.
 
 from fastapi import APIRouter
 
-from api.routes import chat, conversations, documents, jobs, models, pages, uploads
+from api.routes import (
+    chat,
+    conversations,
+    documents,
+    health,
+    jobs,
+    models,
+    pages,
+    uploads,
+)
 
 api_router = APIRouter(prefix="/api")
 api_router.include_router(chat.router)
@@ -19,5 +28,6 @@ api_router.include_router(models.router)
 api_router.include_router(uploads.router)
 api_router.include_router(documents.router)
 api_router.include_router(jobs.router)
+api_router.include_router(health.router)
 
 pages_router = pages.router
