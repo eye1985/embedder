@@ -17,16 +17,18 @@ def get_user(conn: psycopg.Connection, user_id: int) -> tuple[int, str | None]:
     return row
 
 
-def user_for_login(conn: psycopg.Connection, auth0_sub: str, email: str | None) -> int:
-    """The user id for an Auth0 account, creating the row on first sign-in.
+def user_for_login(
+    conn: psycopg.Connection, auth0_sub: str, email: str | None
+) -> tuple[int, bool]:
+    """(id, is_admin) for an Auth0 account, creating the row on first sign-in.
 
     A new user's upload model is the first active one in the registry.
     """
     row = conn.execute(
-        "select id from users where auth0_sub = %s", (auth0_sub,)
+        "select id, is_admin from users where auth0_sub = %s", (auth0_sub,)
     ).fetchone()
     if row is not None:
-        return row[0]
+        return row
 
     # `on conflict` covers two first requests from the same account racing.
     conn.execute(
@@ -39,5 +41,5 @@ def user_for_login(conn: psycopg.Connection, auth0_sub: str, email: str | None) 
         (auth0_sub, email),
     )
     return conn.execute(
-        "select id from users where auth0_sub = %s", (auth0_sub,)
-    ).fetchone()[0]
+        "select id, is_admin from users where auth0_sub = %s", (auth0_sub,)
+    ).fetchone()

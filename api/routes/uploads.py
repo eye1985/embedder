@@ -10,7 +10,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 
-from api.auth.users import CurrentUser
+from api.auth.users import AdminUser
 from api.routes.jobs import slot_conflict
 from api.routes.models import models_for, search_model_for
 from api.schemas import ImportResult, Visibility
@@ -59,7 +59,7 @@ def discard_upload(conn, user_id: int, pdf):
 @router.post("/upload", response_model=ImportResult)
 def upload_endpoint(
     file: UploadFile,
-    user_id: CurrentUser,
+    user_id: AdminUser,
     models: Annotated[list[int] | None, Form()] = None,
     search_model: Annotated[int | None, Form()] = None,
     visibility: Annotated[Visibility, Form()] = "private",

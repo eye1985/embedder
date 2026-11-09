@@ -15,7 +15,7 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 
-from api.auth.users import CurrentUser
+from api.auth.users import AdminUser
 from api.routes.models import models_by_label
 from api.schemas import DeleteJobResult, JobOut, JobStatus, RerunResult
 from api.services.documents import embed_existing
@@ -52,7 +52,7 @@ def slot_conflict(running: dict) -> HTTPException:
 
 
 @router.get("/jobs/current", response_model=JobStatus)
-def current_job_endpoint(user_id: CurrentUser):
+def current_job_endpoint(user_id: AdminUser):
     """Whether a job is running, and the outcome of the last one.
 
     A job outlives the page that started it -- a sync endpoint runs in a thread
@@ -63,7 +63,7 @@ def current_job_endpoint(user_id: CurrentUser):
 
 
 @router.get("/jobs", response_model=list[JobOut])
-def list_jobs_endpoint(user_id: CurrentUser):
+def list_jobs_endpoint(user_id: AdminUser):
     """The user's jobs, newest first."""
     with connection() as conn:
         return list_jobs(conn, user_id)
@@ -71,7 +71,7 @@ def list_jobs_endpoint(user_id: CurrentUser):
 
 # Sync `def` for the same reason as POST /upload: this calls the embedding API.
 @router.post("/jobs/{job_id}/rerun", response_model=RerunResult)
-def rerun_job_endpoint(job_id: int, user_id: CurrentUser):
+def rerun_job_endpoint(job_id: int, user_id: AdminUser):
     """Run a finished or interrupted job again.
 
     This is the repair path for a crash. Embedding skips chunks a model already
@@ -155,7 +155,7 @@ def rerun_job_endpoint(job_id: int, user_id: CurrentUser):
 
 
 @router.delete("/jobs/{job_id}", response_model=DeleteJobResult)
-def delete_job_endpoint(job_id: int, user_id: CurrentUser):
+def delete_job_endpoint(job_id: int, user_id: AdminUser):
     """Forget a job row.
 
     Allowed on a running one, because that is the only way back from a row left

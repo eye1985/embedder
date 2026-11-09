@@ -34,8 +34,13 @@ uv run python -m db.setup    # apply migrations
 Override with `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`,
 `PGADMIN_DEFAULT_EMAIL`, `PGADMIN_DEFAULT_PASSWORD`, `PGADMIN_PORT`.
 
-Users come from Auth0. Sign in at `/login`; the `users`
-row is created the first time an account signs in.
+Users come from Auth0. Sign in from the nav; the `users` row is created the
+first time an account signs in, as a non-admin. Only admins can upload and
+manage documents and jobs. Make an account one with:
+
+```sql
+update users set is_admin = true where email = 'you@example.com';
+```
 
 ## Running
 
@@ -159,10 +164,11 @@ handled by `get_embeddings()` in `db/vectors.py`.
 
 ## API
 
-Five pages: `/` (chat), `/login`, `/upload`, `/documents`, `/jobs`. Chat is
-open to everyone -- signed out it searches public documents only and stores
-nothing. The other three redirect to `/login`, and their endpoints answer 401
-without a session. The JSON API is prefixed with `/api` so a route can never
+Four pages: `/` (chat), `/upload`, `/documents`, `/jobs`. Chat is open to
+everyone -- signed out it searches public documents only and stores nothing.
+The other three are for admins: signed out they redirect to Auth0 and back,
+and a non-admin is sent to chat. Their endpoints answer 401 without a session
+and 403 for a non-admin. The JSON API is prefixed with `/api` so a route can never
 collide with a page.
 
 | method | route | purpose |

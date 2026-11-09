@@ -12,12 +12,15 @@
   <div class="empty">
     <p class="empty-title">Ask a question</p>
     <p class="empty-note">
-      {% if signed_in %}
+      {% if admin %}
       Answers are drawn from your documents and the ones others have made
       public, with the passages retrieved before the model replies.
+      {% elif signed_in %}
+      Answers are drawn from the documents people have made public, with the
+      passages retrieved before the model replies.
       {% else %}
       Answers are drawn from the documents people have made public. Sign in
-      to search your own and keep your conversations.
+      to keep your conversations.
       {% endif %}
     </p>
   </div>

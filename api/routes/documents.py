@@ -13,7 +13,7 @@ from fastapi import APIRouter, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from starlette.responses import FileResponse, JSONResponse, Response
 
-from api.auth.users import CurrentUser
+from api.auth.users import AdminUser, CurrentUser
 from api.routes.jobs import slot_conflict
 from api.routes.models import models_for
 from api.schemas import (
@@ -75,14 +75,14 @@ def attachment(filename: str) -> dict[str, str]:
 # runs these in a worker thread rather than stalling the event loop while a
 # large document is serialized.
 @router.get("/documents", response_model=list[DocumentOut])
-def list_documents_endpoint(user_id: CurrentUser):
+def list_documents_endpoint(user_id: AdminUser):
     """The user's documents, with chunk counts and per-model embedding counts."""
     with connection() as conn:
         return list_documents(conn, user_id)
 
 
 @router.get("/documents/{document_id}/embeddings")
-def download_document_embeddings(document_id: uuid.UUID, user_id: CurrentUser):
+def download_document_embeddings(document_id: uuid.UUID, user_id: AdminUser):
     """One document's chunks and vectors, as a JSON file.
 
     Every model holding vectors for the document is included -- a chunk's
@@ -106,9 +106,9 @@ def download_document_embeddings(document_id: uuid.UUID, user_id: CurrentUser):
 def download_document_source(document_id: uuid.UUID, user_id: CurrentUser):
     """The file a document was imported from, as a download.
 
-    What a chat answer's sources link to. Scoped like every other document
-    endpoint, so someone else's document is reported missing rather than
-    refused.
+    What a chat answer's sources link to. Only the owner gets the file:
+    anyone else's request is reported missing rather than refused, so in
+    practice only admins, who own every document, can download.
     """
     with connection() as conn:
         try:
@@ -126,7 +126,7 @@ def download_document_source(document_id: uuid.UUID, user_id: CurrentUser):
 
 
 @router.get("/embeddings")
-def download_all_embeddings(user_id: CurrentUser):
+def download_all_embeddings(user_id: AdminUser):
     """Every document the user has, as a zip of JSON files plus a manifest."""
     with connection() as conn:
         try:
@@ -168,7 +168,7 @@ def already_here(existing: dict) -> HTTPException:
 @router.post("/documents/import", response_model=RestoreResult)
 def restore_document_endpoint(
     file: UploadFile,
-    user_id: CurrentUser,
+    user_id: AdminUser,
     overwrite: Annotated[bool, Form()] = False,
 ):
     """Put a downloaded export back, exactly as it was.
@@ -242,7 +242,7 @@ def restore_document_endpoint(
 
 @router.patch("/documents/{document_id}", response_model=SearchableResult)
 def set_document_searchable(
-    document_id: uuid.UUID, body: Searchable, user_id: CurrentUser
+    document_id: uuid.UUID, body: Searchable, user_id: AdminUser
 ):
     """Take a document in or out of search entirely, for every model.
 
@@ -260,7 +260,7 @@ def set_document_searchable(
 
 @router.put("/documents/{document_id}/visibility", response_model=VisibilityResult)
 def set_document_visibility(
-    document_id: uuid.UUID, body: VisibilityChange, user_id: CurrentUser
+    document_id: uuid.UUID, body: VisibilityChange, user_id: AdminUser
 ):
     """Open a document to everyone's chat, or keep it to the owner's.
 
@@ -280,7 +280,7 @@ def set_document_visibility(
     response_model=SearchModelResult,
 )
 def set_document_search_model(
-    document_id: uuid.UUID, model_id: int, user_id: CurrentUser
+    document_id: uuid.UUID, model_id: int, user_id: AdminUser
 ):
     """Choose which model this document is retrieved through.
 
@@ -300,7 +300,7 @@ def set_document_search_model(
 # Sync `def` for the same reason as POST /upload: this calls the embedding API.
 @router.post("/documents/{document_id}/embeddings", response_model=EmbedResult)
 def embed_document_endpoint(
-    document_id: uuid.UUID, body: ReEmbed, user_id: CurrentUser
+    document_id: uuid.UUID, body: ReEmbed, user_id: AdminUser
 ):
     """Embed an existing document with one or more models.
 
@@ -354,7 +354,7 @@ def embed_document_endpoint(
 
 
 @router.delete("/documents/{document_id}", response_model=DeleteDocumentResult)
-def delete_document_endpoint(document_id: uuid.UUID, user_id: CurrentUser):
+def delete_document_endpoint(document_id: uuid.UUID, user_id: AdminUser):
     """Delete a document, its chunks, its vectors, and its uploaded PDF.
 
     A document imported from sample/ keeps its file -- those are the repo's,
@@ -371,7 +371,7 @@ def delete_document_endpoint(document_id: uuid.UUID, user_id: CurrentUser):
     "/documents/{document_id}/embeddings", response_model=DeleteEmbeddingsResult
 )
 def delete_document_embeddings(
-    document_id: uuid.UUID, user_id: CurrentUser, model: int | None = None
+    document_id: uuid.UUID, user_id: AdminUser, model: int | None = None
 ):
     """Delete a document's vectors, keeping the document and its chunks.
 

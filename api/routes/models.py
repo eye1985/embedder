@@ -6,7 +6,7 @@ because both /upload and the re-embed endpoint need them.
 
 from fastapi import APIRouter, HTTPException
 
-from api.auth.users import CurrentUser
+from api.auth.users import AdminUser
 from api.schemas import ModelOut
 from db.pool import connection
 from db.tables.embeddings import document_counts
@@ -69,7 +69,7 @@ def search_model_for(
 
 
 @router.get("/models", response_model=list[ModelOut])
-def list_models_endpoint(user_id: CurrentUser):
+def list_models_endpoint(user_id: AdminUser):
     """Every registered embedding model, for the upload form's pickers.
 
     `documents` says how many of the user's documents each has embedded.

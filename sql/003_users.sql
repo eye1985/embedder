@@ -12,6 +12,8 @@ create table users (
     -- for a connection that sends none.
     email      varchar,
     is_premium boolean not null default false,
+    -- Only admins can upload and manage documents and jobs.
+    is_admin   boolean not null default false,
     -- Which model the upload form pre-selects. There is no user-level search
     -- model: each document is retrieved through the one it was given, in
     -- `document_embeddings`, so a question can draw on several at once.

@@ -83,8 +83,8 @@ def database():
         # A fixed id so factories can default to it. The sequence is moved past
         # it, or the next user a test inserts would collide.
         conn.execute(
-            "insert into users (id, auth0_sub, email, upload_model_id) "
-            "values (%s, 'test|user', 'test@example.com', 1)",
+            "insert into users (id, auth0_sub, email, upload_model_id, is_admin) "
+            "values (%s, 'test|user', 'test@example.com', 1, true)",
             (TEST_USER_ID,),
         )
         conn.execute(
@@ -200,15 +200,14 @@ def client():
     had just arranged. The one test that is about startup enters a client as a
     context manager itself, so that wiring is still covered.
 
-    Signed in as the test user: the session lookup is replaced, so no Auth0
-    cookie is needed.
+    Signed in as the test user, an admin: the session lookup is replaced, so
+    no Auth0 cookie is needed.
     """
     from fastapi.testclient import TestClient
 
-    from api.auth.users import current_user, optional_user
+    from api.auth.users import viewer
     from api.server import app
 
-    app.dependency_overrides[current_user] = lambda: TEST_USER_ID
-    app.dependency_overrides[optional_user] = lambda: TEST_USER_ID
+    app.dependency_overrides[viewer] = lambda: (TEST_USER_ID, True)
     yield TestClient(app)
     app.dependency_overrides.clear()
