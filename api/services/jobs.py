@@ -212,7 +212,7 @@ def replay_plan(
     if existing is not None:
         return "embed", str(existing)
 
-    if source_path(source_uri) is not None:
+    if source_path(source_uri, user_id) is not None:
         return "import", None
     return "none", None
 

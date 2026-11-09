@@ -4,8 +4,9 @@ No pipeline here -- that is `indexing/pdf.py`. What is left is everything the
 web adds to a plain import: an untrusted filename, a size ceiling and content
 sniffing. The job row tracking an upload is `api/services/jobs.py`.
 
-PDFs reach the app one way: posted to /upload, which writes them into
-`uploads/`. The filename comes from the browser, so it is untrusted input --
+PDFs reach the app one way: posted to /upload, which writes them into the
+user's own folder, `uploads/<user_id>/`, so two users' files of the same name
+never meet. The filename comes from the browser, so it is untrusted input --
 reduced to a basename before anything opens or creates a path from it.
 """
 
@@ -40,9 +41,14 @@ def upload_filename(upload: UploadFile) -> str:
     return name
 
 
-def upload_source_uri(name: str) -> str:
+def user_upload_dir(user_id: int) -> Path:
+    """Where one user's uploaded PDFs land."""
+    return UPLOAD_DIR / str(user_id)
+
+
+def upload_source_uri(user_id: int, name: str) -> str:
     """The `source_uri` an upload of `name` would be stored under."""
-    return str((UPLOAD_DIR / name).relative_to(PROJECT_ROOT))
+    return str((user_upload_dir(user_id) / name).relative_to(PROJECT_ROOT))
 
 
 def read_upload(upload: UploadFile) -> bytes:
@@ -61,8 +67,9 @@ def read_upload(upload: UploadFile) -> bytes:
     return data
 
 
-def save_upload(upload: UploadFile, name: str) -> Path:
-    """Write an uploaded PDF into uploads/ under `name` and return its path.
+def save_upload(upload: UploadFile, user_id: int, name: str) -> Path:
+    """Write an uploaded PDF into the user's folder under `name` and return
+    its path.
 
     Content is sniffed rather than trusted: an extension says nothing about
     what the bytes are, and the extractor is what would otherwise find out.
@@ -76,8 +83,9 @@ def save_upload(upload: UploadFile, name: str) -> Path:
     if not header.startswith(b"%PDF"):
         raise HTTPException(415, f"{name} is not a PDF.")
 
-    UPLOAD_DIR.mkdir(exist_ok=True)
-    destination = UPLOAD_DIR / name
+    folder = user_upload_dir(user_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    destination = folder / name
 
     size = 0
     try:

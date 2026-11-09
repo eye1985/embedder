@@ -11,7 +11,7 @@ import uuid
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from api.config import CURRENT_USER_ID
+from api.auth.users import CurrentUser
 from api.schemas import (
     ConversationDetail,
     ConversationOut,
@@ -30,24 +30,24 @@ class Rename(BaseModel):
 
 
 @router.get("/conversations", response_model=list[ConversationOut])
-def conversations():
+def conversations(user_id: CurrentUser):
     """The user's conversations, most recently used first."""
     with connection() as conn:
-        return list_conversations(conn, CURRENT_USER_ID)
+        return list_conversations(conn, user_id)
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetail)
-def conversation(conversation_id: uuid.UUID):
+def conversation(conversation_id: uuid.UUID, user_id: CurrentUser):
     """One conversation's transcript, with each answer's sources resolved."""
     with connection() as conn:
-        found = read_conversation(conn, CURRENT_USER_ID, conversation_id)
+        found = read_conversation(conn, user_id, conversation_id)
     if found is None:
         raise HTTPException(status_code=404, detail="No such conversation.")
     return found
 
 
 @router.patch("/conversations/{conversation_id}", response_model=RenameResult)
-def rename(conversation_id: uuid.UUID, body: Rename):
+def rename(conversation_id: uuid.UUID, body: Rename, user_id: CurrentUser):
     """Rename a conversation.
 
     The name starts as the question that opened the conversation, which is a
@@ -58,7 +58,7 @@ def rename(conversation_id: uuid.UUID, body: Rename):
         raise HTTPException(status_code=422, detail="A title cannot be empty.")
 
     with connection() as conn:
-        if not rename_conversation(conn, CURRENT_USER_ID, conversation_id, title):
+        if not rename_conversation(conn, user_id, conversation_id, title):
             raise HTTPException(status_code=404, detail="No such conversation.")
     return {"conversation_id": conversation_id, "title": title}
 
@@ -66,7 +66,7 @@ def rename(conversation_id: uuid.UUID, body: Rename):
 @router.delete(
     "/conversations/{conversation_id}", response_model=DeleteConversationResult
 )
-def remove(conversation_id: uuid.UUID):
+def remove(conversation_id: uuid.UUID, user_id: CurrentUser):
     """Delete a conversation and its messages.
 
     No document is touched. The citations inside a conversation are plain ids
@@ -74,7 +74,7 @@ def remove(conversation_id: uuid.UUID):
     not a reason to disturb what they pointed at.
     """
     with connection() as conn:
-        deleted = delete_conversation(conn, CURRENT_USER_ID, conversation_id)
+        deleted = delete_conversation(conn, user_id, conversation_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="No such conversation.")
     return {"conversation_id": conversation_id, "deleted": True}

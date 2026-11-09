@@ -7,6 +7,7 @@ import {
   readJobStatus,
   setSearchModel,
   setSearchable,
+  setVisibility,
 } from "../lib/endpoints";
 import type { DocumentOut } from "../lib/endpoints";
 import { ApiError } from "../lib/api";
@@ -74,17 +75,20 @@ function actionsFor(doc: DocumentOut): DocActions {
     onSearchable(searchable) {
       void save(() => setSearchable(id, searchable)).then(() => load());
     },
-    onSearchModel(table) {
-      void save(() => setSearchModel(id, table)).then(() => load());
+    onVisibility(visibility) {
+      void save(() => setVisibility(id, visibility)).then(() => load());
+    },
+    onSearchModel(modelId) {
+      void save(() => setSearchModel(id, modelId)).then(() => load());
     },
     // One model per request, so each gets its own outcome: a single call with
     // several would report nothing if the second failed after the first wrote.
     // Polling starts before the wait, so the running job shows up immediately
     // rather than only when the embedding returns.
-    async onEmbed(table) {
+    async onEmbed(modelId) {
       startPolling();
       const ok = await save(
-        () => embedExisting(id, [table]),
+        () => embedExisting(id, [modelId]),
         "Embedding failed.",
       );
       await load();
@@ -215,10 +219,8 @@ async function load(): Promise<void> {
       `${count(chunks)} chunks${running}`;
 
     const context: DocContext = {
-      // Only models with a vector table: `db/setup.py` creates one per active
-      // model, so an inactive row has nothing to embed into and the server
-      // would refuse it.
-      available: models.filter((model) => model.available),
+      models,
+      available: models.filter((model) => model.is_active),
       busy: job.active,
     };
 

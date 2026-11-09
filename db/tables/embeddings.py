@@ -10,9 +10,8 @@ distinguishable from "embedded, not the one being searched".
 At most one row per document has `enabled`: a document is retrieved through
 exactly one model, chosen at upload and changeable afterwards. Two models hold
 the same chunks, so the choice decides which ranking a question gets, not
-which text it can reach. Nothing in Postgres enforces the one-per-document
-rule -- `set_document_model` is what keeps it true, by clearing the others in
-the same statement pair.
+which text it can reach. A partial unique index in `sql/007` enforces the
+one-per-document rule.
 """
 
 import uuid
@@ -67,29 +66,47 @@ def set_document_model(
     Every other model keeps its vectors and stops being searched. Raises
     LookupError if the user has no such pairing -- which includes a document
     that is not theirs, so this cannot be used to probe ids.
-    """
-    row = conn.execute(
-        """
-        update document_embeddings de set enabled = (de.model_id = %s)
-        from documents d
-        where d.id = de.document_id and d.user_id = %s and de.document_id = %s
-        returning de.model_id
-        """,
-        (model_id, user_id, document_id),
-    ).fetchall()
 
-    if model_id not in {r[0] for r in row}:
+    Cleared first, then set: the unique index is checked per row, so a single
+    update could briefly hold two enabled rows and fail.
+    """
+    found = conn.execute(
+        """
+        select 1 from document_embeddings de
+        join documents d on d.id = de.document_id
+        where d.user_id = %s and de.document_id = %s and de.model_id = %s
+        """,
+        (user_id, document_id, model_id),
+    ).fetchone()
+    if found is None:
         raise LookupError(
             f"Document {document_id} has no embeddings from model {model_id}."
         )
 
+    conn.execute(
+        "update document_embeddings set enabled = false "
+        "where document_id = %s and enabled",
+        (document_id,),
+    )
+    conn.execute(
+        "update document_embeddings set enabled = true "
+        "where document_id = %s and model_id = %s",
+        (document_id, model_id),
+    )
 
-def search_groups(conn: psycopg.Connection, user_id: int) -> dict[int, list[str]]:
+
+def search_groups(
+    conn: psycopg.Connection, user_id: int | None
+) -> dict[int, list[str]]:
     """The documents to retrieve from, grouped by the model that searches them.
 
     One entry per model actually in use. A single entry is the common case and
     costs one query embedding; several means the question has to be embedded
     once per model and the results fused.
+
+    The user's own documents and everyone's public ones. `searchable` is the
+    owner's switch, so it takes a public document out of everyone's search.
+    Signed out (`user_id` None), only public documents.
 
     Document ids come back as uuid strings -- they go straight into a vector
     store filter.
@@ -99,7 +116,8 @@ def search_groups(conn: psycopg.Connection, user_id: int) -> dict[int, list[str]
         select de.model_id, de.document_id::text
         from document_embeddings de
         join documents d on d.id = de.document_id
-        where d.user_id = %s and d.searchable and de.enabled
+        where (d.user_id = %s or d.visibility = 'public')
+          and d.searchable and de.enabled
         order by de.model_id
         """,
         (user_id,),

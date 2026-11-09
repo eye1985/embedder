@@ -4,6 +4,99 @@
  */
 
 export interface paths {
+    "/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Login
+         * @description Endpoint to initiate the login process.
+         *     Optionally accepts a 'return_to' query parameter and passes it as part of the app state.
+         *     Redirects the user to the Auth0 authorization URL.
+         *
+         *     When domain is a callable (MCD), the redirect_uri is built dynamically
+         *     from the request host to ensure proper domain handling.
+         */
+        get: operations["login_auth_login_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Callback
+         * @description Endpoint to handle the callback after Auth0 authentication.
+         *     Processes the callback URL and completes the login or connected account flow.
+         *     Redirects the user to a post-login URL based on appState or a default.
+         */
+        get: operations["callback_auth_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Logout
+         * @description Endpoint to handle logout.
+         *     Clears the session cookie (if applicable) and generates a logout URL,
+         *     then redirects the user to Auth0's logout endpoint.
+         *
+         *     For MCD, builds dynamic returnTo URL based on incoming request host.
+         */
+        get: operations["logout_auth_logout_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/backchannel-logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Backchannel Logout
+         * @description Endpoint to process backchannel logout notifications.
+         *     Expects a JSON body with a 'logout_token'.
+         *     Returns 204 No Content on success.
+         */
+        post: operations["backchannel_logout_auth_backchannel_logout_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/chat": {
         parameters: {
             query?: never;
@@ -31,6 +124,9 @@ export interface paths {
          *     searched, so an empty `sources` means the answer leaned on nothing
          *     retrieved -- the passages did not cover the question, or the user has
          *     nothing searchable.
+         *
+         *     Signed out, only public documents are searched and nothing is stored: no
+         *     `conversation` event is sent, and a `conversation_id` is reported missing.
          */
         post: operations["chat_api_chat_post"];
         delete?: never;
@@ -105,8 +201,6 @@ export interface paths {
          * List Models Endpoint
          * @description Every registered embedding model, for the upload form's pickers.
          *
-         *     `available` is what the form gates on: `db/setup.py` only creates tables
-         *     for active models, so an inactive row has nothing to embed into.
          *     `documents` says how many of the user's documents each has embedded.
          */
         get: operations["list_models_endpoint_api_models_get"];
@@ -131,7 +225,7 @@ export interface paths {
          * Upload Endpoint
          * @description Accept a PDF, store it under uploads/, then chunk and embed it.
          *
-         *     `models` is a repeated form field of vector table names. Omitted, the
+         *     `models` is a repeated form field of model ids. Omitted, the
          *     user's upload model is used. Naming several embeds the same chunks once
          *     per model -- the text is extracted and stored only once either way.
          *
@@ -140,6 +234,9 @@ export interface paths {
          *     text, so this decides which ranking questions about this document get,
          *     not which of it can be reached. It can be changed later from the
          *     documents page.
+         *
+         *     `visibility` decides whether everyone's chat can retrieve from it or only
+         *     the owner's. Private unless chosen otherwise.
          *
          *     A name already taken by one of the user's documents is refused with 409,
          *     and refused *before* the file is written. Overwriting would destroy the
@@ -189,8 +286,8 @@ export interface paths {
          * @description One document's chunks and vectors, as a JSON file.
          *
          *     Every model holding vectors for the document is included -- a chunk's
-         *     `embeddings` is keyed by vector table name, so content and metadata are
-         *     stored once no matter how many models embedded it.
+         *     `embeddings` is keyed by model label, so content and metadata are stored
+         *     once no matter how many models embedded it.
          */
         get: operations["download_document_embeddings_api_documents__document_id__embeddings_get"];
         put?: never;
@@ -216,7 +313,7 @@ export interface paths {
          * Delete Document Embeddings
          * @description Delete a document's vectors, keeping the document and its chunks.
          *
-         *     `model` names one vector table; omitted, every model's vectors go. The
+         *     `model` is one model's id; omitted, every model's vectors go. The
          *     chunks survive either way, so POST on this path can embed them again
          *     without re-extracting the PDF.
          *
@@ -339,7 +436,30 @@ export interface paths {
         patch: operations["set_document_searchable_api_documents__document_id__patch"];
         trace?: never;
     };
-    "/api/documents/{document_id}/search-model/{table_name}": {
+    "/api/documents/{document_id}/visibility": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Document Visibility
+         * @description Open a document to everyone's chat, or keep it to the owner's.
+         *
+         *     Only retrieval is shared. The PDF, the export and every setting stay with
+         *     the owner.
+         */
+        put: operations["set_document_visibility_api_documents__document_id__visibility_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/documents/{document_id}/search-model/{model_id}": {
         parameters: {
             query?: never;
             header?: never;
@@ -355,7 +475,7 @@ export interface paths {
          *     ranking questions about this document get -- every other model keeps its
          *     vectors and simply stops being searched, which costs nothing to undo.
          */
-        put: operations["set_document_search_model_api_documents__document_id__search_model__table_name__put"];
+        put: operations["set_document_search_model_api_documents__document_id__search_model__model_id__put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -478,9 +598,15 @@ export interface components {
             /** File */
             file: string;
             /** Models */
-            models?: string[] | null;
+            models?: number[] | null;
             /** Search Model */
-            search_model?: string | null;
+            search_model?: number | null;
+            /**
+             * Visibility
+             * @default private
+             * @enum {string}
+             */
+            visibility: "private" | "public";
         };
         /** Chat */
         Chat: {
@@ -517,6 +643,8 @@ export interface components {
              * @enum {string}
              */
             origin: "upload" | "import";
+            /** Owned */
+            owned: boolean;
         };
         /** ConversationDetail */
         ConversationDetail: {
@@ -616,6 +744,11 @@ export interface components {
             created_at: string;
             /** Searchable */
             searchable: boolean;
+            /**
+             * Visibility
+             * @enum {string}
+             */
+            visibility: "private" | "public";
             /** Chunks */
             chunks: number;
             /** Embedded */
@@ -740,8 +873,10 @@ export interface components {
         };
         /** ModelOut */
         ModelOut: {
-            /** Table Name */
-            table_name: string;
+            /** Model Id */
+            model_id: number;
+            /** Label */
+            label: string;
             /** Provider */
             provider: string;
             /** Model Name */
@@ -750,8 +885,6 @@ export interface components {
             dimensions: number;
             /** Is Active */
             is_active: boolean;
-            /** Available */
-            available: boolean;
             /** Documents */
             documents: number;
             /** Is Upload Default */
@@ -760,7 +893,7 @@ export interface components {
         /** ReEmbed */
         ReEmbed: {
             /** Models */
-            models?: string[] | null;
+            models?: number[] | null;
         };
         /** Rename */
         Rename: {
@@ -855,6 +988,27 @@ export interface components {
             /** Context */
             ctx?: Record<string, never>;
         };
+        /** VisibilityChange */
+        VisibilityChange: {
+            /**
+             * Visibility
+             * @enum {string}
+             */
+            visibility: "private" | "public";
+        };
+        /** VisibilityResult */
+        VisibilityResult: {
+            /**
+             * Document Id
+             * Format: uuid
+             */
+            document_id: string;
+            /**
+             * Visibility
+             * @enum {string}
+             */
+            visibility: "private" | "public";
+        };
     };
     responses: never;
     parameters: never;
@@ -864,6 +1018,86 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    login_auth_login_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    callback_auth_callback_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    logout_auth_logout_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
+    backchannel_logout_auth_backchannel_logout_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+        };
+    };
     chat_api_chat_post: {
         parameters: {
             query?: never;
@@ -1156,7 +1390,7 @@ export interface operations {
     delete_document_embeddings_api_documents__document_id__embeddings_delete: {
         parameters: {
             query?: {
-                model?: string | null;
+                model?: number | null;
             };
             header?: never;
             path: {
@@ -1336,13 +1570,48 @@ export interface operations {
             };
         };
     };
-    set_document_search_model_api_documents__document_id__search_model__table_name__put: {
+    set_document_visibility_api_documents__document_id__visibility_put: {
         parameters: {
             query?: never;
             header?: never;
             path: {
                 document_id: string;
-                table_name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VisibilityChange"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VisibilityResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    set_document_search_model_api_documents__document_id__search_model__model_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+                model_id: number;
             };
             cookie?: never;
         };

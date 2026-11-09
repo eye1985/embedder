@@ -1,17 +1,18 @@
 import { el, input } from "../../lib/dom";
 import { count, formatDate } from "../../lib/format";
 import { documentExportHref, documentSourceHref } from "../../lib/endpoints";
-import type { DocumentOut, ModelOut } from "../../lib/endpoints";
+import type { DocumentOut, ModelOut, Visibility } from "../../lib/endpoints";
 import { chip, chipNote, chipRow } from "../chips/chips";
 import { downloadLink } from "../download/download";
 import { toggleSwitch } from "../switch/switch";
 
 export interface DocActions {
   onSearchable: (searchable: boolean) => void;
-  onSearchModel: (table: string) => void;
+  onVisibility: (visibility: Visibility) => void;
+  onSearchModel: (modelId: number) => void;
   /** Embed this document's stored chunks with one more model. Resolves false
    *  when it failed, so the button can come back. */
-  onEmbed: (table: string) => Promise<boolean>;
+  onEmbed: (modelId: number) => Promise<boolean>;
   /** Resolves false when the delete failed, the one case where this card is
    *  still on screen afterwards. */
   onDelete: () => Promise<boolean>;
@@ -20,8 +21,10 @@ export interface DocActions {
 }
 
 export interface DocContext {
-  /** Models that have a vector table, which is the only kind that can be
-   *  embedded into -- an inactive row has nothing to write to. */
+  /** Every registered model. A document's counts are keyed by label, and
+   *  this is how a label is turned back into the id the API takes. */
+  models: ModelOut[];
+  /** Active models, the only ones offered for embedding. */
   available: ModelOut[];
   /** Whether a job is already running. One at a time per user, so embedding
    *  is offered but refused while something else holds the slot. */
@@ -42,46 +45,50 @@ export interface DocContext {
 // answer for it is not a question until it is searched at all.
 function modelChoice(
   doc: DocumentOut,
-  onChoose: (table: string) => void,
+  models: ModelOut[],
+  onChoose: (modelId: number) => void,
 ): HTMLElement {
   const row = chipRow();
-  const tables = Object.entries(doc.embedded).filter(([, n]) => n);
+  const byLabel = new Map(models.map((model) => [model.label, model]));
+  const embedded = Object.entries(doc.embedded).filter(([, n]) => n);
 
-  if (!tables.length) {
+  if (!embedded.length) {
     row.append(chipNote("no embeddings — not searchable"));
     return row;
   }
 
-  for (const [table, n] of tables) {
-    const active = table === doc.search_model;
+  for (const [label, n] of embedded) {
+    const model = byLabel.get(label);
+    if (!model) continue;
+    const active = label === doc.search_model;
     const control = input("radio", {
       name: `search-model-${doc.document_id}`,
-      value: table,
+      value: String(model.model_id),
       checked: active,
-      disabled: !doc.searchable || (tables.length === 1 && active),
+      disabled: !doc.searchable || (embedded.length === 1 && active),
     });
     control.addEventListener("change", () => {
       for (const button of row.querySelectorAll("input")) {
         button.disabled = true;
       }
-      onChoose(table);
+      onChoose(model.model_id);
     });
-    row.append(chip({ name: table, count: count(n), active, control }));
+    row.append(chip({ name: label, count: count(n), active, control }));
   }
   return row;
 }
 
-// The models that could still embed this document: registered, with a vector
-// table, and holding no vectors for it yet. This is what makes a document
+// The models that could still embed this document: active, and holding no
+// vectors for it yet. This is what makes a document
 // gain a model it was not uploaded with -- the chunks are already stored and
 // are model-independent, so nothing is extracted again.
 function addEmbedding(
   doc: DocumentOut,
   context: DocContext,
-  onEmbed: (table: string) => Promise<boolean>,
+  onEmbed: (modelId: number) => Promise<boolean>,
 ): HTMLElement | null {
   const missing = context.available.filter(
-    (model) => !doc.embedded[model.table_name],
+    (model) => !doc.embedded[model.label],
   );
   if (!missing.length) return null;
 
@@ -91,13 +98,13 @@ function addEmbedding(
   for (const model of missing) {
     const button = el("button", "chip-button", model.model_name);
     button.type = "button";
-    button.title = `${model.table_name} · ${model.dimensions}d`;
+    button.title = model.label;
     button.disabled = context.busy;
     button.addEventListener("click", () => {
       if (!window.confirm(embedWarning(doc, model))) return;
       for (const other of row.querySelectorAll("button")) other.disabled = true;
       button.textContent = "Embedding…";
-      void onEmbed(model.table_name).then((ok) => {
+      void onEmbed(model.model_id).then((ok) => {
         if (!ok) {
           button.textContent = model.model_name;
           for (const other of row.querySelectorAll("button")) {
@@ -142,13 +149,22 @@ export function docCard(
 
   const head = el("div", "doc-head");
   head.append(el("h2", "doc-title", doc.title || "Untitled"));
-  head.append(
+  const switches = el("div", "doc-switches");
+  switches.append(
+    toggleSwitch({
+      label: "Public",
+      checked: doc.visibility === "public",
+      onChange: (on) => actions.onVisibility(on ? "public" : "private"),
+    }),
+  );
+  switches.append(
     toggleSwitch({
       label: "Searchable",
       checked: doc.searchable,
       onChange: actions.onSearchable,
     }),
   );
+  head.append(switches);
   item.append(head);
 
   const meta = el("p", "doc-meta");
@@ -163,7 +179,7 @@ export function docCard(
   // Chips and the row's own actions share a line, so a document reads as one
   // block rather than four stacked rows.
   const foot = el("div", "doc-foot");
-  foot.append(modelChoice(doc, actions.onSearchModel));
+  foot.append(modelChoice(doc, context.models, actions.onSearchModel));
 
   const docActions = el("div", "doc-actions");
 

@@ -1,8 +1,5 @@
 """Database connection settings and the psycopg connection pool.
 
-Two URL forms are needed: psycopg3 for the plain SQL this project runs itself,
-and the SQLAlchemy form for PGEngine.
-
 Connections are pooled. Nothing here opens a connection per call -- `connection()`
 borrows one and hands it back, so a request burst reuses a bounded set of
 sockets instead of negotiating a new one each time.
@@ -23,26 +20,9 @@ load_dotenv()
 DATABASE_URL = os.getenv(
     "DATABASE_URL", "postgresql://postgres:admin@localhost:5432/postgres"
 )
-SQLALCHEMY_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
-# --- Connection budget -------------------------------------------------------
-#
-# One driver, two pools. This pool and the one inside PGEngine both reach
-# Postgres through psycopg 3: SQLAlchemy's `postgresql+psycopg://` dialect is
-# PGDialectAsync_psycopg, whose DBAPI module is psycopg itself. What differs is
-# the layer above -- sync psycopg here, async SQLAlchemy there -- so the
-# duplication is in pooling, not in drivers.
-#
-# They cannot be merged while PGVectorStore is in use. Its only sharing hook,
-# PGEngine.from_engine(), takes an AsyncEngine and passes thread=None, which
-# leaves _run_as_sync raising "Engine was initialized without a background
-# loop" -- breaking create_sync, add_documents and similarity_search. Getting
-# to one pool means dropping PGVectorStore and issuing the vector SQL here.
-#
-# Worst case per process is DB_POOL_MAX_SIZE (10) + DB_ENGINE_POOL_SIZE (5) +
-# DB_ENGINE_MAX_OVERFLOW (10) = 25 connections. Postgres defaults to
-# max_connections = 100 with 3 reserved, so four workers at these numbers
-# exhaust the server. Size them down before running more than two.
+# Worst case per process is DB_POOL_MAX_SIZE connections. Postgres defaults to
+# max_connections = 100 with 3 reserved.
 POOL_MIN_SIZE = int(os.getenv("DB_POOL_MIN_SIZE", "1"))
 POOL_MAX_SIZE = int(os.getenv("DB_POOL_MAX_SIZE", "10"))
 POOL_TIMEOUT = float(os.getenv("DB_POOL_TIMEOUT", "30"))

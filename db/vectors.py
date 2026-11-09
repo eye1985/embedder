@@ -1,66 +1,20 @@
-"""Builds a PGVectorStore for any registered embedding model.
+"""The embedding service behind each registered model.
 
-The embedding service is no longer hardcoded -- it is chosen from the
-`embedding_models` row, so one user can hold OpenAI vectors and Qwen vectors
-side by side, each in its own table.
+The service is chosen from the `embedding_models` row, so one document can
+hold vectors from several models side by side in `chunk_embeddings`.
 
-Engines and stores are cached per process. A PGEngine wraps its own SQLAlchemy
-async pool, so building one per call would open a fresh set of connections
-every time and never release them.
+Services are cached per model: each owns an HTTP client worth reusing.
 """
 
-import logging
-import os
 import threading
 
 from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
-from langchain_postgres import PGEngine, PGVectorStore
-from langchain_postgres.v2.indexes import DistanceStrategy
 
-from db.pool import SQLALCHEMY_URL
 from db.tables.registry import EmbeddingModel
 
-# Columns every vector table carries as real columns rather than JSON. A search
-# filters on columns of its own table -- HNSW returns its top-k before a join
-# could scope the results -- so both the owner and the document have to live
-# here: user_id to keep one user's vectors out of another's results, and
-# document_id to restrict a search to the documents `document_embeddings` says
-# are searchable.
-METADATA_COLUMNS = ["chunk_id", "user_id", "document_id"]
-
-DISTANCE_STRATEGIES = {
-    "cosine": DistanceStrategy.COSINE_DISTANCE,
-    "inner_product": DistanceStrategy.INNER_PRODUCT,
-    "l2": DistanceStrategy.EUCLIDEAN,
-}
-
-# SQLAlchemy's pool, separate from the psycopg pool in `pool.py` though both run
-# on psycopg 3. Read the connection budget note there before raising these.
-ENGINE_POOL_SIZE = int(os.getenv("DB_ENGINE_POOL_SIZE", "5"))
-ENGINE_MAX_OVERFLOW = int(os.getenv("DB_ENGINE_MAX_OVERFLOW", "10"))
-
-logger = logging.getLogger(__name__)
-
-_engines: dict[str, PGEngine] = {}
-_stores: dict[tuple[str, str], PGVectorStore] = {}
+_services: dict[int, Embeddings] = {}
 _lock = threading.Lock()
-
-
-def get_engine(connection_string: str = SQLALCHEMY_URL) -> PGEngine:
-    """The cached PGEngine for a connection string, built on first use."""
-    with _lock:
-        engine = _engines.get(connection_string)
-        if engine is None:
-            engine = PGEngine.from_connection_string(
-                url=connection_string,
-                pool_size=ENGINE_POOL_SIZE,
-                max_overflow=ENGINE_MAX_OVERFLOW,
-                # Discard connections the server has already dropped.
-                pool_pre_ping=True,
-            )
-            _engines[connection_string] = engine
-        return engine
 
 
 def get_embeddings(model: EmbeddingModel) -> Embeddings:
@@ -68,70 +22,21 @@ def get_embeddings(model: EmbeddingModel) -> Embeddings:
     if model.provider == "openai":
         return OpenAIEmbeddings(model=model.model_name, dimensions=model.dimensions)
 
-    if model.provider in ("qwen", "huggingface"):
-        try:
-            from langchain_huggingface import HuggingFaceEmbeddings
-        except ImportError as exc:
-            raise RuntimeError(
-                f"Provider {model.provider!r} needs extra packages: "
-                f"uv add langchain-huggingface sentence-transformers"
-            ) from exc
-        return HuggingFaceEmbeddings(model_name=model.model_name)
-
     raise ValueError(
         f"Unknown provider {model.provider!r}. Add it to get_embeddings()."
     )
 
 
-def get_vector_store(
-    model: EmbeddingModel, connection_string: str = SQLALCHEMY_URL
-) -> PGVectorStore:
-    """The cached store for `model`'s vector table.
-
-    The table is not created here -- run `db/setup.py` once to create it.
-    """
-    key = (connection_string, model.table_name)
+def embeddings_for(model: EmbeddingModel) -> Embeddings:
+    """The cached service for `model`, built on first use."""
     with _lock:
-        store = _stores.get(key)
-        if store is not None:
-            return store
+        service = _services.get(model.id)
+        if service is None:
+            service = _services[model.id] = get_embeddings(model)
+        return service
 
-    # Built outside the lock: constructing a store talks to the database, and
-    # an embedding service may load a local model.
-    try:
-        store = PGVectorStore.create_sync(
-            engine=get_engine(connection_string),
-            table_name=model.table_name,
-            embedding_service=get_embeddings(model),
-            metadata_columns=METADATA_COLUMNS,
-            distance_strategy=DISTANCE_STRATEGIES[model.distance],
-        )
-    except ValueError as exc:
-        raise RuntimeError(
-            f"Table {model.table_name!r} is missing or has the wrong columns. "
-            f"Create it with: uv run python -m db.setup"
-        ) from exc
 
+def clear_embeddings() -> None:
+    """Forget every cached service."""
     with _lock:
-        # Another thread may have won the race; keep whichever landed first so
-        # callers never hold two stores for one table.
-        return _stores.setdefault(key, store)
-
-
-def close_engines() -> None:
-    """Dispose every cached engine. Call on process shutdown.
-
-    PGEngine exposes only an async `close`. `_run_as_sync` is the same bridge
-    its own sync API uses -- it hands the coroutine to the background loop, so
-    this works whether or not the caller is already inside an event loop.
-    `asyncio.run` does not: it raises inside FastAPI's async lifespan.
-    """
-    with _lock:
-        for url, engine in _engines.items():
-            try:
-                engine._run_as_sync(engine.close())
-            except Exception:
-                # Shutdown must not raise -- a leaked pool dies with the process.
-                logger.warning("Failed to dispose engine for %s", url, exc_info=True)
-        _engines.clear()
-        _stores.clear()
+        _services.clear()

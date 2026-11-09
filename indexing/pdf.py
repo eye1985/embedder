@@ -33,12 +33,15 @@ def import_pdf(
     pdf: Path,
     models: list[EmbeddingModel],
     search_model: EmbeddingModel | None = None,
+    visibility: str = "private",
 ) -> dict:
     """Store a PDF's chunks if new, then embed them with each model.
 
     `search_model` is the one the document is retrieved through; it must be
     one of `models`, and defaults to the first. The others keep their vectors
     and are simply not searched.
+
+    `visibility` only applies to a new document; a reused one keeps its own.
 
     `pdf` must be an absolute path inside the project. `source_uri` is derived
     from it relative to `PROJECT_ROOT`, and that string is the key uploads
@@ -54,9 +57,9 @@ def import_pdf(
     reused = document_id is not None
 
     if document_id is None:
-        document_id = _store(conn, user_id, pdf, source_uri)
+        document_id = _store(conn, user_id, pdf, source_uri, visibility)
 
-    embedded = {m.table_name: embed_document(conn, document_id, m) for m in models}
+    embedded = {m.label: embed_document(conn, document_id, m) for m in models}
 
     searched = search_model or models[0]
     set_document_model(conn, user_id, document_id, searched.id)
@@ -67,18 +70,21 @@ def import_pdf(
         "reused_existing_document": reused,
         "chunks": count_chunks(conn, document_id),
         "embedded": embedded,
-        "search_model": searched.table_name,
+        "search_model": searched.label,
     }
 
 
 def _store(
-    conn: psycopg.Connection, user_id: int, pdf: Path, source_uri: str
+    conn: psycopg.Connection,
+    user_id: int,
+    pdf: Path,
+    source_uri: str,
+    visibility: str,
 ) -> uuid.UUID:
     """Extract, chunk and store a PDF that has no document row yet.
 
-    Committed before returning because embedding is what happens next: the
-    vector tables are written over a second pool, and their foreign keys cannot
-    see an uncommitted chunk.
+    Committed before returning because embedding is what happens next, and the
+    embedding API is called outside any transaction.
     """
     # Imported here rather than at module scope: extract pulls in docling,
     # which is slow to import and not needed to serve chat.
@@ -94,6 +100,7 @@ def _store(
         split_documents(texts),
         title=pdf.stem,
         source_uri=source_uri,
+        visibility=visibility,
     )
     conn.commit()
     return document_id

@@ -17,12 +17,17 @@ mountThemeToggle();
 
 const messages = transcript(must("messages"));
 const input = composer(mustBe("form", HTMLFormElement), ask);
-const sidebar = conversationList(must("conversations"), {
-  onOpen: (id) => void open(id),
-  onNew: startNew,
-  onRename: rename,
-  onDelete: remove,
-});
+// Only rendered when signed in: a signed-out chat is not stored, so there is
+// nothing to list and every question stands alone.
+const sidebarNode = document.getElementById("conversations");
+const sidebar =
+  sidebarNode &&
+  conversationList(sidebarNode, {
+    onOpen: (id) => void open(id),
+    onNew: startNew,
+    onRename: rename,
+    onDelete: remove,
+  });
 
 // The conversation on screen. Null is a chat that has not been stored yet --
 // the first answer is what creates it, so until then there is nothing to name
@@ -43,18 +48,6 @@ function syncHeaderHeight(): void {
 new ResizeObserver(syncHeaderHeight).observe(header);
 syncHeaderHeight();
 
-// The model marks each claim with the number of the document it came from so
-// the server can tell which ones the answer actually used. That is all they
-// are for, so they come back out before the reader sees them -- with the space
-// in front, or removing one leaves a gap before the full stop.
-//
-// The whole accumulated answer is stripped on every token rather than each
-// token on arrival: a marker can straddle two of them, and the trailing clause
-// is what keeps a half-arrived one from flashing up as `[1`.
-function withoutMarkers(answer: string): string {
-  return answer.replace(/ ?\[\d+\]/g, "").replace(/ ?\[\d*$/, "");
-}
-
 function report(error: unknown): void {
   messages.add(
     "error",
@@ -73,7 +66,7 @@ function showInUrl(id: string | null): void {
 
 async function refresh(): Promise<void> {
   conversations = await listConversations();
-  sidebar.render(conversations, current);
+  sidebar?.render(conversations, current);
 }
 
 async function open(id: string): Promise<void> {
@@ -91,17 +84,17 @@ async function open(id: string): Promise<void> {
       messages.add("user", "You", message.content);
       continue;
     }
-    // Rendered exactly as a live answer is, markers stripped and sources
-    // resolved -- the server re-resolves those on every read, so a document
-    // deleted since this answer was written is simply no longer offered.
+    // Rendered exactly as a live answer is, sources resolved -- the server
+    // re-resolves those on every read, so a document deleted since this
+    // answer was written is simply no longer offered.
     const reply = messages.add("assistant", "Assistant");
-    reply.write(withoutMarkers(message.content));
+    reply.write(message.content);
     reply.showSources(message.sources);
   }
 
   current = id;
   showInUrl(id);
-  sidebar.render(conversations, current);
+  sidebar?.render(conversations, current);
   messages.scrollToBottom();
 }
 
@@ -109,7 +102,7 @@ function startNew(): void {
   current = null;
   messages.reset();
   showInUrl(null);
-  sidebar.render(conversations, current);
+  sidebar?.render(conversations, current);
 }
 
 async function rename(id: string, title: string): Promise<boolean> {
@@ -145,8 +138,6 @@ async function ask(prompt: string): Promise<void> {
 
   // Accumulated here rather than read back off the node: the node holds
   // rendered markdown, which is not the source the next token appends to.
-  // The raw text is what accumulates, markers and all -- stripping it here
-  // would mean re-stripping a string the next token appends to anyway.
   let answer = "";
   let failed: string | null = null;
   let finished = false;
@@ -158,13 +149,13 @@ async function ask(prompt: string): Promise<void> {
   try {
     // The answer arrives as `token` events, then `conversation` naming the
     // conversation the turn was stored in, then one `sources` naming the
-    // documents it cited, then `done`.
+    // documents it drew on, then `done`.
     for await (const { event, data } of readEvents(
       await askChat(prompt, current),
     )) {
       if (event === "token") {
         answer += (data as { t: string }).t;
-        reply.write(withoutMarkers(answer));
+        reply.write(answer);
         messages.scrollToBottom();
       } else if (event === "conversation") {
         landed = (data as { conversation_id: string }).conversation_id;
@@ -211,6 +202,7 @@ async function ask(prompt: string): Promise<void> {
 // history is only worth having if a reload comes back to where it was. A user
 // with none lands on an empty chat, which is also what "New chat" gives.
 async function boot(): Promise<void> {
+  if (!sidebar) return;
   try {
     conversations = await listConversations();
   } catch (error) {

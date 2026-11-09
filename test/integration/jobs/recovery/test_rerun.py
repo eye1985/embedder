@@ -15,7 +15,7 @@ def test_rerunning_an_interrupted_job_finishes_the_work(conn, client, small_mode
         kind="embed",
         subject="Nutrition",
         status="interrupted",
-        models=(small_model.table_name,),
+        models=(small_model.label,),
         document_id=document_id,
         source_uri="uploads/Nutrition.pdf",
     )
@@ -23,8 +23,8 @@ def test_rerunning_an_interrupted_job_finishes_the_work(conn, client, small_mode
     response = client.post("/api/jobs/1/rerun")
 
     assert response.status_code == 200
-    assert response.json()["embedded"] == {small_model.table_name: 4}
-    assert vector_count(conn, small_model.table_name, document_id) == 4
+    assert response.json()["embedded"] == {small_model.label: 4}
+    assert vector_count(conn, small_model, document_id) == 4
 
 
 def test_rerunning_writes_a_new_row_and_leaves_the_old_one(conn, client, small_model):
@@ -35,7 +35,7 @@ def test_rerunning_writes_a_new_row_and_leaves_the_old_one(conn, client, small_m
         kind="embed",
         subject="Nutrition",
         status="interrupted",
-        models=(small_model.table_name,),
+        models=(small_model.label,),
         document_id=document_id,
     )
 
@@ -51,14 +51,14 @@ def test_rerunning_a_job_that_already_succeeded_embeds_nothing(
     document_id = a_document(conn, title="Nutrition", chunks=3)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
 
     response = client.post("/api/jobs/1/rerun")
 
     assert response.status_code == 200
-    assert response.json()["embedded"] == {small_model.table_name: 0}
-    assert vector_count(conn, small_model.table_name, document_id) == 3
+    assert response.json()["embedded"] == {small_model.label: 0}
+    assert vector_count(conn, small_model, document_id) == 3
 
 
 def test_a_rerun_needs_the_slot_like_any_other_job(conn, client, small_model):
@@ -69,7 +69,7 @@ def test_a_rerun_needs_the_slot_like_any_other_job(conn, client, small_model):
         kind="embed",
         subject="Nutrition",
         status="interrupted",
-        models=(small_model.table_name,),
+        models=(small_model.label,),
         document_id=document_id,
     )
     a_job(conn, kind="upload", subject="other.pdf", status="running")
@@ -87,7 +87,7 @@ def test_a_job_still_marked_running_is_not_rerun(conn, client, small_model):
         kind="embed",
         subject="Nutrition",
         status="running",
-        models=(small_model.table_name,),
+        models=(small_model.label,),
         document_id=document_id,
     )
 
@@ -105,7 +105,7 @@ def test_a_job_with_nothing_left_is_refused_with_a_reason(conn, client, small_mo
         kind="embed",
         subject="Nutrition",
         status="interrupted",
-        models=(small_model.table_name,),
+        models=(small_model.label,),
         source_uri="uploads/deleted-long-ago.pdf",
     )
 

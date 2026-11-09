@@ -13,7 +13,7 @@ from fastapi import APIRouter, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from starlette.responses import FileResponse, JSONResponse, Response
 
-from api.config import CURRENT_USER_ID
+from api.auth.users import CurrentUser
 from api.routes.jobs import slot_conflict
 from api.routes.models import models_for
 from api.schemas import (
@@ -24,6 +24,8 @@ from api.schemas import (
     RestoreResult,
     SearchableResult,
     SearchModelResult,
+    Visibility,
+    VisibilityResult,
 )
 from api.services.documents import (
     delete_document,
@@ -45,7 +47,7 @@ from api.services.jobs import begin_job, finish_job
 from api.services.sources import source_path
 from api.services.uploads import read_upload
 from db.pool import connection
-from db.tables.documents import get_document, set_searchable
+from db.tables.documents import get_document, set_searchable, set_visibility
 from db.tables.embeddings import set_document_model
 from db.tables.registry import get_model
 
@@ -56,8 +58,12 @@ class Searchable(BaseModel):
     searchable: bool
 
 
+class VisibilityChange(BaseModel):
+    visibility: Visibility
+
+
 class ReEmbed(BaseModel):
-    models: list[str] | None = None
+    models: list[int] | None = None
 
 
 def attachment(filename: str) -> dict[str, str]:
@@ -69,23 +75,23 @@ def attachment(filename: str) -> dict[str, str]:
 # runs these in a worker thread rather than stalling the event loop while a
 # large document is serialized.
 @router.get("/documents", response_model=list[DocumentOut])
-def list_documents_endpoint():
+def list_documents_endpoint(user_id: CurrentUser):
     """The user's documents, with chunk counts and per-model embedding counts."""
     with connection() as conn:
-        return list_documents(conn, CURRENT_USER_ID)
+        return list_documents(conn, user_id)
 
 
 @router.get("/documents/{document_id}/embeddings")
-def download_document_embeddings(document_id: uuid.UUID):
+def download_document_embeddings(document_id: uuid.UUID, user_id: CurrentUser):
     """One document's chunks and vectors, as a JSON file.
 
     Every model holding vectors for the document is included -- a chunk's
-    `embeddings` is keyed by vector table name, so content and metadata are
-    stored once no matter how many models embedded it.
+    `embeddings` is keyed by model label, so content and metadata are stored
+    once no matter how many models embedded it.
     """
     with connection() as conn:
         try:
-            payload = export_document(conn, CURRENT_USER_ID, document_id)
+            payload = export_document(conn, user_id, document_id)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
 
@@ -97,7 +103,7 @@ def download_document_embeddings(document_id: uuid.UUID):
 
 
 @router.get("/documents/{document_id}/source")
-def download_document_source(document_id: uuid.UUID):
+def download_document_source(document_id: uuid.UUID, user_id: CurrentUser):
     """The file a document was imported from, as a download.
 
     What a chat answer's sources link to. Scoped like every other document
@@ -106,11 +112,11 @@ def download_document_source(document_id: uuid.UUID):
     """
     with connection() as conn:
         try:
-            _, _, _, source_uri, _ = get_document(conn, CURRENT_USER_ID, document_id)
+            _, _, _, source_uri, _ = get_document(conn, user_id, document_id)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
 
-    path = source_path(source_uri)
+    path = source_path(source_uri, user_id)
     if path is None:
         raise HTTPException(404, f"No stored file for document {document_id}.")
 
@@ -120,11 +126,11 @@ def download_document_source(document_id: uuid.UUID):
 
 
 @router.get("/embeddings")
-def download_all_embeddings():
+def download_all_embeddings(user_id: CurrentUser):
     """Every document the user has, as a zip of JSON files plus a manifest."""
     with connection() as conn:
         try:
-            archive, filename = export_archive(conn, CURRENT_USER_ID)
+            archive, filename = export_archive(conn, user_id)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
 
@@ -162,6 +168,7 @@ def already_here(existing: dict) -> HTTPException:
 @router.post("/documents/import", response_model=RestoreResult)
 def restore_document_endpoint(
     file: UploadFile,
+    user_id: CurrentUser,
     overwrite: Annotated[bool, Form()] = False,
 ):
     """Put a downloaded export back, exactly as it was.
@@ -187,7 +194,7 @@ def restore_document_endpoint(
         raise HTTPException(422, str(exc)) from exc
 
     with connection() as conn:
-        existing = conflicting_document(conn, CURRENT_USER_ID, exported)
+        existing = conflicting_document(conn, user_id, exported)
     if existing is not None and not overwrite:
         raise already_here(existing)
 
@@ -199,10 +206,10 @@ def restore_document_endpoint(
     # jobs table has a foreign key to it. `finish_job` reads it off the result
     # once it does, which is how an upload's row gains the link too.
     job_id, running = begin_job(
-        CURRENT_USER_ID,
+        user_id,
         "import",
         exported.title or exported.source_uri or str(exported.document_id),
-        [m.table_name for m in exported.models],
+        [m.label for m in exported.models],
         source_uri=exported.source_uri,
     )
     if running is not None:
@@ -213,7 +220,7 @@ def restore_document_endpoint(
             try:
                 result = restore_export(
                     conn,
-                    CURRENT_USER_ID,
+                    user_id,
                     exported,
                     replace=existing["document_id"] if existing else None,
                 )
@@ -234,7 +241,9 @@ def restore_document_endpoint(
 
 
 @router.patch("/documents/{document_id}", response_model=SearchableResult)
-def set_document_searchable(document_id: uuid.UUID, body: Searchable):
+def set_document_searchable(
+    document_id: uuid.UUID, body: Searchable, user_id: CurrentUser
+):
     """Take a document in or out of search entirely, for every model.
 
     The vectors stay where they are, and so does the per-model state in
@@ -243,17 +252,36 @@ def set_document_searchable(document_id: uuid.UUID, body: Searchable):
     """
     with connection() as conn:
         try:
-            set_searchable(conn, CURRENT_USER_ID, document_id, body.searchable)
+            set_searchable(conn, user_id, document_id, body.searchable)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
         return {"document_id": str(document_id), "searchable": body.searchable}
 
 
+@router.put("/documents/{document_id}/visibility", response_model=VisibilityResult)
+def set_document_visibility(
+    document_id: uuid.UUID, body: VisibilityChange, user_id: CurrentUser
+):
+    """Open a document to everyone's chat, or keep it to the owner's.
+
+    Only retrieval is shared. The PDF, the export and every setting stay with
+    the owner.
+    """
+    with connection() as conn:
+        try:
+            set_visibility(conn, user_id, document_id, body.visibility)
+        except LookupError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return {"document_id": str(document_id), "visibility": body.visibility}
+
+
 @router.put(
-    "/documents/{document_id}/search-model/{table_name}",
+    "/documents/{document_id}/search-model/{model_id}",
     response_model=SearchModelResult,
 )
-def set_document_search_model(document_id: uuid.UUID, table_name: str):
+def set_document_search_model(
+    document_id: uuid.UUID, model_id: int, user_id: CurrentUser
+):
     """Choose which model this document is retrieved through.
 
     Exactly one at a time. The models hold the same chunks, so this picks the
@@ -262,16 +290,18 @@ def set_document_search_model(document_id: uuid.UUID, table_name: str):
     """
     with connection() as conn:
         try:
-            model = get_model(conn, table_name=table_name)
-            set_document_model(conn, CURRENT_USER_ID, document_id, model.id)
+            model = get_model(conn, model_id=model_id)
+            set_document_model(conn, user_id, document_id, model.id)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
-        return {"document_id": str(document_id), "search_model": table_name}
+        return {"document_id": str(document_id), "search_model": model.label}
 
 
 # Sync `def` for the same reason as POST /upload: this calls the embedding API.
 @router.post("/documents/{document_id}/embeddings", response_model=EmbedResult)
-def embed_document_endpoint(document_id: uuid.UUID, body: ReEmbed):
+def embed_document_endpoint(
+    document_id: uuid.UUID, body: ReEmbed, user_id: CurrentUser
+):
     """Embed an existing document with one or more models.
 
     How a document gains a model it was not uploaded with, and how one emptied
@@ -289,18 +319,16 @@ def embed_document_endpoint(document_id: uuid.UUID, body: ReEmbed):
     """
     with connection() as conn:
         try:
-            _, _, title, source_uri, _ = get_document(
-                conn, CURRENT_USER_ID, document_id
-            )
+            _, _, title, source_uri, _ = get_document(conn, user_id, document_id)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
-        models = models_for(conn, body.models)
+        models = models_for(conn, user_id, body.models)
 
     job_id, running = begin_job(
-        CURRENT_USER_ID,
+        user_id,
         "embed",
         title or source_uri or str(document_id),
-        [m.table_name for m in models],
+        [m.label for m in models],
         source_uri=source_uri,
         document_id=document_id,
     )
@@ -310,7 +338,7 @@ def embed_document_endpoint(document_id: uuid.UUID, body: ReEmbed):
     try:
         with connection() as conn:
             try:
-                result = embed_existing(conn, CURRENT_USER_ID, document_id, models)
+                result = embed_existing(conn, user_id, document_id, models)
             except LookupError as exc:
                 raise HTTPException(404, str(exc)) from exc
         finish_job(job_id, result=result)
@@ -326,7 +354,7 @@ def embed_document_endpoint(document_id: uuid.UUID, body: ReEmbed):
 
 
 @router.delete("/documents/{document_id}", response_model=DeleteDocumentResult)
-def delete_document_endpoint(document_id: uuid.UUID):
+def delete_document_endpoint(document_id: uuid.UUID, user_id: CurrentUser):
     """Delete a document, its chunks, its vectors, and its uploaded PDF.
 
     A document imported from sample/ keeps its file -- those are the repo's,
@@ -334,7 +362,7 @@ def delete_document_endpoint(document_id: uuid.UUID):
     """
     with connection() as conn:
         try:
-            return delete_document(conn, CURRENT_USER_ID, document_id)
+            return delete_document(conn, user_id, document_id)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
 
@@ -342,10 +370,12 @@ def delete_document_endpoint(document_id: uuid.UUID):
 @router.delete(
     "/documents/{document_id}/embeddings", response_model=DeleteEmbeddingsResult
 )
-def delete_document_embeddings(document_id: uuid.UUID, model: str | None = None):
+def delete_document_embeddings(
+    document_id: uuid.UUID, user_id: CurrentUser, model: int | None = None
+):
     """Delete a document's vectors, keeping the document and its chunks.
 
-    `model` names one vector table; omitted, every model's vectors go. The
+    `model` is one model's id; omitted, every model's vectors go. The
     chunks survive either way, so POST on this path can embed them again
     without re-extracting the PDF.
 
@@ -354,6 +384,6 @@ def delete_document_embeddings(document_id: uuid.UUID, model: str | None = None)
     """
     with connection() as conn:
         try:
-            return delete_embeddings(conn, CURRENT_USER_ID, document_id, model)
+            return delete_embeddings(conn, user_id, document_id, model)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc

@@ -4,12 +4,18 @@ No endpoints live here. They are in `api/routes/`, included at the bottom.
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from auth0_fastapi.auth.auth_client import AuthClient
+from auth0_fastapi.config import Auth0Config
+from auth0_fastapi.server.routes import register_auth_routes
+from auth0_fastapi.server.routes import router as auth0_router
 from fastapi import FastAPI, Request
 from fastapi.staticfiles import StaticFiles
 from psycopg_pool import PoolTimeout
+from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import JSONResponse, Response
 
 from api.assets import AssetsNotBuilt
@@ -17,7 +23,6 @@ from api.config import STATIC_DIR
 from api.routes import api_router, pages_router
 from api.services.jobs import sweep_running_jobs
 from db.pool import close_pool, connection, get_pool
-from db.vectors import close_engines
 
 logger = logging.getLogger("api")
 
@@ -44,11 +49,23 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        close_engines()
         close_pool()
 
 
 app = FastAPI(lifespan=lifespan)
+app.add_middleware(SessionMiddleware, secret_key=os.environ["AUTH0_SECRET"])
+
+auth0_config = Auth0Config(
+    domain=os.environ["AUTH0_DOMAIN"],
+    client_id=os.environ["AUTH0_CLIENT_ID"],
+    client_secret=os.environ["AUTH0_CLIENT_SECRET"],
+    app_base_url=os.environ["APP_BASE_URL"],
+    secret=os.environ["AUTH0_SECRET"],
+    authorization_params={"scope": "openid profile email"},
+)
+app.state.config = auth0_config
+app.state.auth_client = AuthClient(auth0_config)
+register_auth_routes(auth0_router, auth0_config)
 
 
 # One year, the conventional maximum. `immutable` also stops a reload from
@@ -116,5 +133,6 @@ async def unhandled_handler(request: Request, exc: Exception):
     )
 
 
+app.include_router(auth0_router)
 app.include_router(pages_router)
 app.include_router(api_router)

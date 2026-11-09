@@ -20,20 +20,20 @@ def test_a_document_gains_a_model_it_was_not_uploaded_with(
 
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     response = client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [large_model.table_name]},
+        json={"models": [large_model.id]},
     )
 
     assert response.status_code == 200
-    assert response.json()["embedded"] == {large_model.table_name: 5}
-    assert vector_count(conn, small_model.table_name, document_id) == 5
-    assert vector_count(conn, large_model.table_name, document_id) == 5
+    assert response.json()["embedded"] == {large_model.label: 5}
+    assert vector_count(conn, small_model, document_id) == 5
+    assert vector_count(conn, large_model, document_id) == 5
     assert embedded_models(conn, document_id) == {
-        small_model.table_name,
-        large_model.table_name,
+        small_model.label,
+        large_model.label,
     }
 
 
@@ -51,16 +51,16 @@ def test_adding_a_model_does_not_change_which_one_answers(
 
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
-    assert enabled_models(conn, document_id) == {small_model.table_name}
+    assert enabled_models(conn, document_id) == {small_model.label}
 
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [large_model.table_name]},
+        json={"models": [large_model.id]},
     )
 
-    assert enabled_models(conn, document_id) == {small_model.table_name}, (
+    assert enabled_models(conn, document_id) == {small_model.label}, (
         "the added model must be available but NOT searched -- exactly one "
         "model answers for a document, and it stays the user's choice"
     )

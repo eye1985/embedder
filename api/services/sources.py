@@ -16,25 +16,28 @@ from pathlib import Path
 
 import psycopg
 
-from api.services.uploads import UPLOAD_DIR
+from api.services.uploads import user_upload_dir
 from db.tables.documents import cited_chunks
 from paths import PROJECT_ROOT
 
-# Where a document's file may be: uploads/ for anything imported through the
-# web, sample/ for the PDFs that ship with the repo.
-SOURCE_DIRS = (UPLOAD_DIR, PROJECT_ROOT / "sample")
+# The PDFs that ship with the repo, which any user may have imported.
+SAMPLE_DIR = PROJECT_ROOT / "sample"
 
 
-def source_path(source_uri: str | None) -> Path | None:
-    """The file behind a document, if it is still there.
+def source_path(source_uri: str | None, user_id: int) -> Path | None:
+    """The file behind one of the user's documents, if it is still there.
 
-    Checked against the directories the app imports from, so a `source_uri`
-    edited to point elsewhere on disk resolves to nothing.
+    Checked against the user's own upload folder and sample/, so a `source_uri`
+    pointing elsewhere -- another user's folder included, which a restored
+    export can name -- resolves to nothing.
     """
     if not source_uri:
         return None
     path = (PROJECT_ROOT / source_uri).resolve()
-    if not any(path.is_relative_to(directory) for directory in SOURCE_DIRS):
+    if not any(
+        path.is_relative_to(directory)
+        for directory in (user_upload_dir(user_id), SAMPLE_DIR)
+    ):
         return None
     return path if path.is_file() else None
 
@@ -43,7 +46,7 @@ def _chunk_ids(citations: list[dict]) -> list[str]:
     return [chunk_id for entry in citations for chunk_id in entry["chunk_ids"]]
 
 
-def _by_document(rows: list[tuple]) -> dict[str, dict]:
+def _by_document(rows: list[tuple], user_id: int | None) -> dict[str, dict]:
     """Resolved chunk rows collapsed to one entry per document.
 
     `filename` is what the download actually arrives as, which is why it is
@@ -57,24 +60,29 @@ def _by_document(rows: list[tuple]) -> dict[str, dict]:
     no less theirs; an upload whose file went missing is a file that should be
     there and is not. Both are unclickable, and the chip says which.
 
+    Someone else's public document is never a download: only the owner can
+    fetch the PDF, so its file is not looked up and `owned` is what the chip
+    says instead.
+
     The disk is consulted once per document rather than once per row: a
     document contributes a row per chunk, and they all resolve to the same
     file.
     """
     found: dict[str, dict] = {}
-    for _chunk_id, document_id, title, source_uri, origin, page in rows:
+    for _chunk_id, document_id, title, source_uri, origin, page, owned in rows:
         source = found.get(document_id)
         if source is None:
             # Resolved against the disk, not just the column: a file deleted
             # from under its row would otherwise be offered as a link that
             # 404s.
-            stored = source_path(source_uri)
+            stored = source_path(source_uri, user_id) if owned else None
             source = found[document_id] = {
                 "title": title,
                 "filename": stored.name if stored else None,
                 "pages": set(),
                 "has_source": stored is not None,
                 "origin": origin,
+                "owned": owned,
             }
         if page is not None:
             source["pages"].add(page + 1)
@@ -98,6 +106,7 @@ def _chips(found: dict[str, dict], citations: list[dict]) -> list[dict]:
             "pages": sorted(found[document_id]["pages"]),
             "has_source": found[document_id]["has_source"],
             "origin": found[document_id]["origin"],
+            "owned": found[document_id]["owned"],
         }
         for document_id in (entry["document_id"] for entry in citations)
         if document_id in found
@@ -105,7 +114,7 @@ def _chips(found: dict[str, dict], citations: list[dict]) -> list[dict]:
 
 
 def resolve_sources(
-    conn: psycopg.Connection, user_id: int, citations: list[dict]
+    conn: psycopg.Connection, user_id: int | None, citations: list[dict]
 ) -> list[dict]:
     """One answer's stored citations, resolved.
 
@@ -118,7 +127,8 @@ def resolve_sources(
         return []
     # Scoped to the user by the query, so a chunk id belonging to someone else
     # resolves to no row rather than to their document.
-    return _chips(_by_document(cited_chunks(conn, user_id, chunk_ids)), citations)
+    rows = cited_chunks(conn, user_id, chunk_ids)
+    return _chips(_by_document(rows, user_id), citations)
 
 
 def resolve_each(
@@ -136,5 +146,5 @@ def resolve_each(
     if not chunk_ids:
         return [[] for _ in transcript]
 
-    found = _by_document(cited_chunks(conn, user_id, chunk_ids))
+    found = _by_document(cited_chunks(conn, user_id, chunk_ids), user_id)
     return [_chips(found, citations) for citations in transcript]

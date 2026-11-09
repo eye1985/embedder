@@ -13,8 +13,12 @@ import uuid
 
 import psycopg
 
-from api.config import CURRENT_USER_ID
 from db.tables.documents import add_document
+from db.tables.registry import EmbeddingModel, get_model
+
+# The user `test/conftest.py` creates, and who every builder acts for unless told
+# otherwise.
+TEST_USER_ID = 1
 
 
 def a_document(
@@ -24,7 +28,7 @@ def a_document(
     chunks: int = 3,
     source_uri: str | None = None,
     metadata: dict | None = None,
-    user_id: int = CURRENT_USER_ID,
+    user_id: int = TEST_USER_ID,
 ) -> uuid.UUID:
     """A stored document with `chunks` chunks of distinct text, and no vectors.
 
@@ -54,10 +58,10 @@ def a_job(
     status: str = "running",
     kind: str = "upload",
     subject: str = "report.pdf",
-    models: tuple[str, ...] = ("emb_openai_te3_small",),
+    models: tuple[str, ...] = ("openai/text-embedding-3-small@1536",),
     source_uri: str | None = None,
     document_id: uuid.UUID | None = None,
-    user_id: int = CURRENT_USER_ID,
+    user_id: int = TEST_USER_ID,
 ) -> int:
     """A job row in whatever state the test needs.
 
@@ -89,13 +93,19 @@ def a_job(
 
 
 def vector_count(
-    conn: psycopg.Connection, table_name: str, document_id: uuid.UUID | None = None
+    conn: psycopg.Connection,
+    model: EmbeddingModel,
+    document_id: uuid.UUID | None = None,
 ) -> int:
     """How many vectors a model holds, for one document or in total."""
     if document_id is None:
-        return conn.execute(f'select count(*) from "{table_name}"').fetchone()[0]
+        return conn.execute(
+            "select count(*) from chunk_embeddings where model_id = %s", (model.id,)
+        ).fetchone()[0]
     return conn.execute(
-        f'select count(*) from "{table_name}" where document_id = %s', (document_id,)
+        "select count(*) from chunk_embeddings "
+        "where model_id = %s and document_id = %s",
+        (model.id, document_id),
     ).fetchone()[0]
 
 
@@ -119,30 +129,24 @@ def enabled_models(conn: psycopg.Connection, document_id: uuid.UUID) -> set[str]
     """
     conn.rollback()
     rows = conn.execute(
-        """
-        select m.table_name
-        from document_embeddings de
-        join embedding_models m on m.id = de.model_id
-        where de.document_id = %s and de.enabled
-        """,
+        "select model_id from document_embeddings where document_id = %s and enabled",
         (document_id,),
     ).fetchall()
-    return {table for (table,) in rows}
+    return _labels(conn, rows)
 
 
 def embedded_models(conn: psycopg.Connection, document_id: uuid.UUID) -> set[str]:
     """Every model with a `document_embeddings` row for this document."""
     conn.rollback()
     rows = conn.execute(
-        """
-        select m.table_name
-        from document_embeddings de
-        join embedding_models m on m.id = de.model_id
-        where de.document_id = %s
-        """,
+        "select model_id from document_embeddings where document_id = %s",
         (document_id,),
     ).fetchall()
-    return {table for (table,) in rows}
+    return _labels(conn, rows)
+
+
+def _labels(conn: psycopg.Connection, rows: list[tuple[int]]) -> set[str]:
+    return {get_model(conn, model_id=model_id).label for (model_id,) in rows}
 
 
 def an_export(client, document_id: uuid.UUID) -> bytes:

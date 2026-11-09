@@ -13,48 +13,58 @@ and the pair of fields that distinguishes them:
 saying so is the difference between "your own export" and "something is
 missing".
 
-The chain under test is the live one in two steps: what the model wrote
-decides which documents are cited (`citations_from`, whose output is also what
-gets stored), and the ids are then resolved against the database and the disk
-(`resolve_sources`). No OpenAI is reached: the answer is a literal string and
-the chunks come out of Postgres.
+The chain under test is the live one in two steps: which retrieved passages
+the answer drew on decides which documents are sources (`citations_from`, whose
+output is also what gets stored), and the ids are then resolved against the
+database and the disk (`resolve_sources`). No OpenAI is reached: the distances
+are set by hand, the embeddings are the deterministic fake, and the chunks come
+out of Postgres. An answer repeating a passage's text is as close to it as an
+answer can be; an unrelated sentence is nowhere near.
 """
 
 from langchain_core.documents import Document
 
-from api.config import CURRENT_USER_ID
 from api.routes.chat import citations_from
 from api.services.sources import resolve_sources
+from db import vectors
 from db.pool import connection
 from db.tables.documents import chunk_rows
-from llm.chat import _label
-from test.factories import a_document, an_export, restore_from_json
+from db.tables.registry import get_model
+from llm.chat import SOURCE_MAX_DISTANCE, _label
+from test.factories import TEST_USER_ID, a_document, an_export, restore_from_json
 
 
-def sources(retrieved, answer):
-    """The two halves composed as the chat route composes them."""
+def sources(retrieved, answer=None):
+    """The two halves composed as the chat route composes them. Without an
+    answer, one that repeats the first passage -- drawing on it."""
+    answer = retrieved[0].page_content if answer is None else answer
     with connection() as conn:
-        return resolve_sources(conn, CURRENT_USER_ID, citations_from(retrieved, answer))
+        return resolve_sources(conn, TEST_USER_ID, citations_from(retrieved, answer))
 
 
-# One citation, so the single document in each test is the one cited. An
-# answer citing nothing reports no sources at all, which is its own case.
-AN_ANSWER = "Grandmother tells stories [1]."
-
-
-def retrieved_from(conn, document_id):
+def retrieved_from(conn, document_id, distance=SOURCE_MAX_DISTANCE / 2):
     """A document's chunks, shaped the way retrieval hands them to `sources`.
 
     Put through `_label`, which is what attaches the document id and page the
     panel is built from -- so this covers the real chain rather than a
-    hand-made approximation of it.
+    hand-made approximation of it. Close to the question unless told otherwise.
     """
     conn.rollback()
+    model = get_model(conn, model_id=1)
+    embeddings = vectors.embeddings_for(model)
     documents = [
-        Document(page_content=content, metadata={"chunk_id": chunk_id})
+        Document(
+            page_content=content,
+            metadata={
+                "chunk_id": chunk_id,
+                "distance": distance,
+                "model": model,
+                "vector": embeddings.embed_query(content),
+            },
+        )
         for chunk_id, _index, content, _metadata in chunk_rows(conn, document_id)
     ]
-    return _label(CURRENT_USER_ID, documents)
+    return _label(TEST_USER_ID, documents)
 
 
 def test_has_source_follows_a_document_through_a_delete_and_a_reimport(
@@ -71,11 +81,11 @@ def test_has_source_follows_a_document_through_a_delete_and_a_reimport(
     document_id = a_document(conn, title="Nutrition", chunks=3, source_uri=source_uri)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     exported = an_export(client, document_id)
 
-    (before,) = sources(retrieved_from(conn, document_id), AN_ANSWER)
+    (before,) = sources(retrieved_from(conn, document_id))
     assert before["has_source"] is True
     assert before["filename"] == path.name
     assert before["origin"] == "upload"
@@ -86,7 +96,7 @@ def test_has_source_follows_a_document_through_a_delete_and_a_reimport(
 
     assert restore_from_json(client, exported).status_code == 200
 
-    (after,) = sources(retrieved_from(conn, document_id), AN_ANSWER)
+    (after,) = sources(retrieved_from(conn, document_id))
     assert after["has_source"] is False
     assert after["filename"] is None
     assert after["origin"] == "import"
@@ -105,11 +115,11 @@ def test_a_pdf_deleted_outside_the_app_is_not_reported_as_an_import(
     document_id = a_document(conn, title="Nutrition", chunks=3, source_uri=source_uri)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     path.unlink()
 
-    (source,) = sources(retrieved_from(conn, document_id), AN_ANSWER)
+    (source,) = sources(retrieved_from(conn, document_id))
 
     assert source["has_source"] is False
     assert source["filename"] is None
@@ -131,12 +141,12 @@ def test_a_restored_document_whose_pdf_is_still_there_offers_it(
     document_id = a_document(conn, title="Nutrition", chunks=3, source_uri=source_uri)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     exported = an_export(client, document_id)
     assert restore_from_json(client, exported, overwrite=True).status_code == 200
 
-    (source,) = sources(retrieved_from(conn, document_id), AN_ANSWER)
+    (source,) = sources(retrieved_from(conn, document_id))
 
     assert path.is_file(), "overwriting must not take the PDF with it"
     assert source["has_source"] is True
@@ -144,13 +154,44 @@ def test_a_restored_document_whose_pdf_is_still_there_offers_it(
     assert source["origin"] == "import"
 
 
-def test_an_answer_that_cites_nothing_reports_no_sources(conn, client, small_model):
-    """Retrieval is not citation: ten chunks come back for a broad question
-    and the panel names only what the answer actually leaned on."""
+def test_passages_too_far_from_the_question_are_not_sources(conn, client, small_model):
+    """Retrieval always returns its closest chunks, however far off. Only
+    those close enough to the question are offered as sources."""
     document_id = a_document(conn, title="Nutrition", chunks=3)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
+    far = SOURCE_MAX_DISTANCE + 0.1
 
-    assert sources(retrieved_from(conn, document_id), "I do not know.") == []
+    assert sources(retrieved_from(conn, document_id, distance=far)) == []
+
+
+def test_an_answer_that_did_not_use_the_passages_has_no_sources(
+    conn, client, small_model
+):
+    """Close passages are not enough: an answer saying they did not cover the
+    question is nowhere near them, and offers none of them."""
+    document_id = a_document(conn, title="Nutrition", chunks=3)
+    client.post(
+        f"/api/documents/{document_id}/embeddings",
+        json={"models": [small_model.id]},
+    )
+    refusal = "The provided passages do not contain that."
+
+    assert sources(retrieved_from(conn, document_id), refusal) == []
+
+
+def test_only_the_passages_the_answer_drew_on_give_pages(conn, client, small_model):
+    """The pages shown are the passages the answer is close to, not every
+    passage of the document that was retrieved."""
+    document_id = a_document(conn, title="Nutrition", chunks=3)
+    client.post(
+        f"/api/documents/{document_id}/embeddings",
+        json={"models": [small_model.id]},
+    )
+    retrieved = retrieved_from(conn, document_id)
+
+    (source,) = sources(retrieved, retrieved[1].page_content)
+
+    assert source["pages"] == [retrieved[1].metadata["page"] + 1]

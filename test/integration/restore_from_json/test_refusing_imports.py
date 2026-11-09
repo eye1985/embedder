@@ -28,7 +28,7 @@ def test_importing_the_same_file_twice_is_refused(conn, client, small_model):
     document_id = a_document(conn, title="Nutrition", chunks=3)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     original = an_export(client, document_id)
 
@@ -168,25 +168,21 @@ def test_a_source_uri_that_leaves_the_project_is_refused(
     assert client.get("/api/documents").json() == []
 
 
-def test_a_model_whose_width_has_changed_since_the_export_is_refused(
-    client, an_exported_file
-):
+def test_a_model_indexed_for_another_distance_is_refused(client, an_exported_file):
     """The registry row the file names is no longer the one that made it.
 
-    The vectors are the width the file declares, so the parser is satisfied --
-    it is the table they would land in that cannot hold them, which only the
+    The file is well-formed, so the parser is satisfied -- it is the index the
+    vectors would land in that ranks by a different distance, which only the
     registry can say.
     """
     payload = json.loads(an_exported_file)
-    (table,) = payload["models"]
-    payload["models"][table]["dimensions"] = 8
-    for chunk in payload["chunks"]:
-        chunk["embeddings"][table] = [0.1] * 8
+    (label,) = payload["models"]
+    payload["models"][label]["distance"] = "l2"
 
     response = restore_from_json(client, json.dumps(payload).encode())
 
     assert response.status_code == 400
-    assert "dimensions" in response.json()["detail"]
+    assert "distance" in response.json()["detail"]
 
 
 def test_a_model_this_installation_does_not_have_is_refused(conn, client, small_model):
@@ -198,16 +194,12 @@ def test_a_model_this_installation_does_not_have_is_refused(conn, client, small_
     document_id = a_document(conn, title="Nutrition", chunks=2)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     payload = json.loads(an_export(client, document_id))
     client.delete(f"/api/documents/{document_id}")
 
-    payload["models"]["emb_imaginary"] = payload["models"].pop(small_model.table_name)
-    for chunk in payload["chunks"]:
-        chunk["embeddings"]["emb_imaginary"] = chunk["embeddings"].pop(
-            small_model.table_name
-        )
+    payload["models"][small_model.label]["model_name"] = "imaginary-model"
 
     response = restore_from_json(client, json.dumps(payload).encode())
 

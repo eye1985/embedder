@@ -10,10 +10,10 @@ from typing import Annotated
 
 from fastapi import APIRouter, Form, HTTPException, UploadFile
 
-from api.config import CURRENT_USER_ID
+from api.auth.users import CurrentUser
 from api.routes.jobs import slot_conflict
 from api.routes.models import models_for, search_model_for
-from api.schemas import ImportResult
+from api.schemas import ImportResult, Visibility
 from api.services.documents import delete_document
 from api.services.jobs import begin_job, finish_job
 from api.services.uploads import (
@@ -31,24 +31,21 @@ logger = logging.getLogger("api")
 router = APIRouter()
 
 
-def discard_upload(conn, pdf):
+def discard_upload(conn, user_id: int, pdf):
     """Undo a half-finished upload.
 
     `import_pdf` commits the document and its chunks before embedding starts --
-    it has to, because the vector tables are written over a second pool and
-    their foreign keys cannot see an uncommitted chunk. So a failure during
-    embedding leaves a committed document that a rollback cannot reach, and it
-    has to be deleted explicitly. Without this the user is stuck: the row makes
+    it has to, because the embedding API is called outside any transaction. So
+    a failure during embedding leaves a committed document that a rollback
+    cannot reach, and it has to be deleted explicitly. Without this the user is stuck: the row makes
     the filename taken, so re-uploading returns 409.
     """
-    document_id = find_document(
-        conn, CURRENT_USER_ID, str(pdf.relative_to(PROJECT_ROOT))
-    )
+    document_id = find_document(conn, user_id, str(pdf.relative_to(PROJECT_ROOT)))
     if document_id is None:
         pdf.unlink(missing_ok=True)
         return
     try:
-        delete_document(conn, CURRENT_USER_ID, document_id)
+        delete_document(conn, user_id, document_id)
         # Committed here because the caller is about to raise, and the
         # surrounding context manager would otherwise roll this back too.
         conn.commit()
@@ -62,12 +59,14 @@ def discard_upload(conn, pdf):
 @router.post("/upload", response_model=ImportResult)
 def upload_endpoint(
     file: UploadFile,
-    models: Annotated[list[str] | None, Form()] = None,
-    search_model: Annotated[str | None, Form()] = None,
+    user_id: CurrentUser,
+    models: Annotated[list[int] | None, Form()] = None,
+    search_model: Annotated[int | None, Form()] = None,
+    visibility: Annotated[Visibility, Form()] = "private",
 ):
     """Accept a PDF, store it under uploads/, then chunk and embed it.
 
-    `models` is a repeated form field of vector table names. Omitted, the
+    `models` is a repeated form field of model ids. Omitted, the
     user's upload model is used. Naming several embeds the same chunks once
     per model -- the text is extracted and stored only once either way.
 
@@ -76,6 +75,9 @@ def upload_endpoint(
     text, so this decides which ranking questions about this document get,
     not which of it can be reached. It can be changed later from the
     documents page.
+
+    `visibility` decides whether everyone's chat can retrieve from it or only
+    the owner's. Private unless chosen otherwise.
 
     A name already taken by one of the user's documents is refused with 409,
     and refused *before* the file is written. Overwriting would destroy the
@@ -87,13 +89,15 @@ def upload_endpoint(
     a demo, and the point at which this needs a job queue instead.
     """
     name = upload_filename(file)
+    with connection() as conn:
+        chosen = models_for(conn, user_id, models)
 
     job_id, running = begin_job(
-        CURRENT_USER_ID,
+        user_id,
         "upload",
         name,
-        models or [],
-        source_uri=upload_source_uri(name),
+        [m.label for m in chosen],
+        source_uri=upload_source_uri(user_id, name),
     )
     if running is not None:
         # Claimed before the file is read, so a second job is turned away
@@ -104,7 +108,7 @@ def upload_endpoint(
     try:
         with connection() as conn:
             if (
-                find_document(conn, CURRENT_USER_ID, upload_source_uri(name))
+                find_document(conn, user_id, upload_source_uri(user_id, name))
                 is not None
             ):
                 raise HTTPException(
@@ -113,19 +117,18 @@ def upload_endpoint(
                     f"delete the existing document before uploading a new version.",
                 )
 
-            chosen = models_for(conn, models)
             searched = search_model_for(chosen, search_model)
-            pdf = save_upload(file, name)
+            pdf = save_upload(file, user_id, name)
 
             try:
-                result = import_pdf(conn, CURRENT_USER_ID, pdf, chosen, searched)
+                result = import_pdf(conn, user_id, pdf, chosen, searched, visibility)
             except ExtractionFailed as exc:
                 # Refused before anything was stored, so there is no document
                 # row to clean up -- only the file that was just written.
                 pdf.unlink(missing_ok=True)
                 raise HTTPException(422, str(exc)) from exc
             except Exception as exc:
-                discard_upload(conn, pdf)
+                discard_upload(conn, user_id, pdf)
                 # Distinguish "this provider is not usable here" from "the call
                 # to it failed": the first is configuration, the second upstream.
                 if isinstance(exc, RuntimeError | ValueError):

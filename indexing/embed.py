@@ -1,14 +1,13 @@
-"""Writing a document's chunks into one model's vector table."""
+"""Embedding a document's chunks with one model."""
 
 import uuid
 
 import psycopg
-from langchain_core.documents import Document
 
-from db.tables.documents import unembedded_chunks
+from db import vectors
+from db.tables.chunk_embeddings import insert_vectors, unembedded_chunks
 from db.tables.embeddings import mark_embedded
 from db.tables.registry import EmbeddingModel
-from db.vectors import get_vector_store
 
 
 def embed_document(
@@ -16,35 +15,26 @@ def embed_document(
     document_id: uuid.UUID,
     model: EmbeddingModel,
 ) -> int:
-    """Embed a document's chunks into `model`'s vector table.
+    """Embed a document's chunks with `model`. Returns how many were embedded.
 
     Chunks already embedded by this model are skipped, so re-running is cheap
-    and adding a second model only embeds what that model is missing. Returns
-    how many chunks were embedded.
+    and adding a second model only embeds what that model is missing.
+
+    The embedding API is called outside any transaction, so a slow call does
+    not leave one open. Whatever the caller had pending is committed first.
+    The vectors and the pairing then commit together.
     """
-    rows = unembedded_chunks(conn, document_id, model.table_name)
+    rows = unembedded_chunks(conn, document_id, model.id)
+    conn.commit()
     if not rows:
         return 0
 
-    # Only the three real columns travel into the vector table. Everything
-    # else stays on document_chunks.
-    docs = [
-        Document(
-            page_content=content,
-            metadata={
-                "chunk_id": str(chunk_id),
-                "user_id": user_id,
-                "document_id": str(document_id),
-            },
-        )
-        for chunk_id, content, user_id in rows
-    ]
+    chunk_ids = [chunk_id for chunk_id, _ in rows]
+    embedded = vectors.embeddings_for(model).embed_documents(
+        [content for _, content in rows]
+    )
 
-    store = get_vector_store(model)
-    store.add_documents(docs)
-
-    # After the write, so a failed embed leaves no pairing claiming vectors
-    # that are not there. The vectors go over a second pool, so this is not
-    # one transaction -- the other direction would be the lie.
-    mark_embedded(conn, document_id, model.id)
-    return len(docs)
+    with conn.transaction():
+        insert_vectors(conn, model, document_id, zip(chunk_ids, embedded))
+        mark_embedded(conn, document_id, model.id)
+    return len(rows)

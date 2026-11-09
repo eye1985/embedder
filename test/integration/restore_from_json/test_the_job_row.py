@@ -23,10 +23,8 @@ def import_jobs(client) -> list[dict]:
 
 def undescribed_model(payload: dict) -> bytes:
     """The file, with its model renamed to one no registry has."""
-    (table,) = payload["models"]
-    payload["models"]["emb_imaginary"] = payload["models"].pop(table)
-    for chunk in payload["chunks"]:
-        chunk["embeddings"]["emb_imaginary"] = chunk["embeddings"].pop(table)
+    (label,) = payload["models"]
+    payload["models"][label]["model_name"] = "imaginary-model"
     return json.dumps(payload).encode()
 
 
@@ -76,7 +74,7 @@ def test_an_import_refused_before_it_starts_leaves_no_job(conn, client, small_mo
     document_id = a_document(conn, title="Nutrition", chunks=2)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
 
     assert restore_from_json(client, an_export(client, document_id)).status_code == 409

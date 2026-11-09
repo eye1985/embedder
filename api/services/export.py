@@ -1,10 +1,13 @@
 """The export format: one document as JSON, or a whole library as a zip.
 
-Vectors live in one table per registered model, so an export is a fan-out: a
-chunk's text and metadata are read once from `document_chunks`, and each
-model's table contributes its own vector for that chunk. The exported shape
-follows that -- content stored once, `embeddings` keyed by table name --
-rather than one file per model, which would repeat the text for every model.
+A chunk's text and metadata are read once from `document_chunks`, and each
+model that embedded it contributes its own vector. The exported shape follows
+that -- content stored once, `embeddings` keyed by model label -- rather than
+one file per model, which would repeat the text for every model.
+
+The file is meant to be portable to another vector database, so it carries
+what one needs and no internal ids: each model's provider, name, width,
+distance and storage type, and per chunk its text, metadata and vectors.
 
 `EXPORT_VERSION` makes this a contract: anything that changes the shape of a
 payload below should bump it. No SQL is written here -- rows arrive through
@@ -21,12 +24,13 @@ from pathlib import Path
 
 import psycopg
 
-from db.tables.documents import chunk_rows, get_document, vector_rows
-from db.tables.registry import EmbeddingModel, list_models, models_with_tables
+from db.tables.chunk_embeddings import vector_rows
+from db.tables.documents import chunk_rows, get_document
+from db.tables.registry import EmbeddingModel, list_models
 from db.tables.users import get_user
 from paths import PROJECT_ROOT
 
-EXPORT_VERSION = 1
+EXPORT_VERSION = 2
 
 # Keeps archive entries readable without letting a long PDF title dominate the
 # path. The document id in front is what actually makes the name unique.
@@ -35,17 +39,20 @@ MAX_TITLE_SLUG = 60
 
 def _model_info(model: EmbeddingModel, *, registry_fields: bool = False) -> dict:
     """The model's identity as exported. `dimensions` is what a reader needs to
-    interpret a vector; `distance` is what it was indexed for."""
+    interpret a vector; `distance` is what it was indexed for. `storage` says
+    whether the floats are full precision (`vector`) or fp16-rounded
+    (`halfvec`)."""
     info = {
         "provider": model.provider,
         "model_name": model.model_name,
         "dimensions": model.dimensions,
         "distance": model.distance,
+        "storage": model.element,
     }
     if registry_fields:
         # Only the manifest carries these -- they describe the registry row, not
         # the vectors, and are noise inside every document file.
-        return {"id": model.id, **info, "is_active": model.is_active}
+        return {**info, "is_active": model.is_active}
     return info
 
 
@@ -100,29 +107,26 @@ def export_document(
 
     Raises LookupError if the document does not exist or belongs to someone else.
     """
-    doc_id, owner_id, title, source_uri, created_at = get_document(
-        conn, user_id, document_id
-    )
+    doc_id, _, title, source_uri, created_at = get_document(conn, user_id, document_id)
     chunks = chunk_rows(conn, document_id)
 
     vectors: dict[str, dict[str, list[float]]] = {}
     models: dict[str, EmbeddingModel] = {}
-    for model in models_with_tables(conn):
-        rows = vector_rows(conn, document_id, model.table_name)
+    for model in list_models(conn, active_only=False):
+        rows = vector_rows(conn, document_id, model)
         if not rows:
             # A model that never embedded this document is left out entirely,
             # rather than adding a column of nulls to every chunk.
             continue
-        vectors[model.table_name] = {
+        vectors[model.label] = {
             chunk_id: json.loads(vector) for chunk_id, vector in rows
         }
-        models[model.table_name] = model
+        models[model.label] = model
 
     return {
         "export_version": EXPORT_VERSION,
         "document": {
             "id": doc_id,
-            "user_id": owner_id,
             "title": title,
             "source_uri": source_uri,
             "created_at": created_at.isoformat(),
@@ -174,10 +178,8 @@ def build_archive(
         manifest = {
             "export_version": EXPORT_VERSION,
             "exported_at": exported_at.isoformat(),
-            "user": {"id": user_row[0], "email": user_row[1]},
-            "models": {
-                m.table_name: _model_info(m, registry_fields=True) for m in models
-            },
+            "user": {"email": user_row[1]},
+            "models": {m.label: _model_info(m, registry_fields=True) for m in models},
             "documents": entries,
         }
         # Indented: the manifest is the file a person opens first.

@@ -38,11 +38,11 @@ function models(job: JobOut): HTMLElement {
   const row = chipRow();
   const embedded = job.result?.embedded;
 
-  for (const table of job.models) {
-    const n = embedded?.[table];
+  for (const label of job.models) {
+    const n = embedded?.[label];
     row.append(
       chip({
-        name: table,
+        name: label,
         count: n === undefined ? "—" : `+${count(n)}`,
         zero: !n,
       }),

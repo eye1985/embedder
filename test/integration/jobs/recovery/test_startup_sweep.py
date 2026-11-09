@@ -80,7 +80,7 @@ def test_recovering_frees_the_slot(conn, client, small_model):
     # Before: locked out.
     blocked = client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     assert blocked.status_code == 409
 
@@ -91,10 +91,10 @@ def test_recovering_frees_the_slot(conn, client, small_model):
     # After: through.
     allowed = client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     assert allowed.status_code == 200
-    assert vector_count(conn, small_model.table_name, document_id) == 2
+    assert vector_count(conn, small_model, document_id) == 2
 
 
 def test_startup_runs_the_sweep(conn):

@@ -6,30 +6,30 @@ against this installation's registry, noticing that the document is already
 here, and writing the rows.
 
 Everything lands on one connection, so document, chunks and vectors commit
-together or not at all. That is possible here and not on the upload path
-because nothing has to be embedded -- the vectors arrive in the file, so
-PGVectorStore and its separate pool are not involved.
+together or not at all. Nothing has to be embedded -- the vectors arrive in
+the file.
 
-Scoped to a single user_id, like every other document service. The `user_id`
-in the file is ignored: a restore puts the document in the library of whoever
-uploads it.
+Scoped to a single user_id, like every other document service: a restore puts
+the document in the library of whoever uploads it.
 """
 
+import dataclasses
 import uuid
 
 import psycopg
 
 from api.services.from_json.parse import ExportedDocument, ExportedModel
+from db.tables.chunk_embeddings import insert_vectors
 from db.tables.documents import (
     count_chunks,
+    document_id_taken,
     find_document,
     get_document,
-    insert_vectors,
     restore_document,
 )
 from db.tables.documents import delete_document as delete_document_rows
 from db.tables.embeddings import mark_embedded, set_document_model
-from db.tables.registry import EmbeddingModel, get_model, table_exists
+from db.tables.registry import EmbeddingModel, get_model
 
 
 class CannotRestore(Exception):
@@ -38,32 +38,30 @@ class CannotRestore(Exception):
 
 def _registered(
     conn: psycopg.Connection, exported: list[ExportedModel]
-) -> list[EmbeddingModel]:
-    """The registry rows the file's models name, in the file's order.
+) -> list[tuple[str, EmbeddingModel]]:
+    """The registry rows the file's models name, with the file's label for
+    each, in the file's order.
 
-    Checked before anything is written, because the alternative is vectors in
-    a table that cannot interpret them. A model the registry does not have
-    raises LookupError; one that has been redefined since the export, or has
-    no vector table yet, raises CannotRestore.
+    Checked before anything is written, because the alternative is vectors
+    nothing can interpret. A model the registry does not have raises
+    LookupError; one indexed for a different distance raises CannotRestore.
     """
     models = []
     for entry in exported:
-        # LookupError on an unknown table name, which the endpoint reports as
-        # a 404 the same way an unknown model elsewhere is.
-        model = get_model(conn, table_name=entry.table_name)
-
-        if not table_exists(conn, model.table_name):
+        # LookupError on an unknown model, which the endpoint reports as a 404
+        # the same way an unknown model elsewhere is.
+        model = get_model(
+            conn,
+            provider=entry.provider,
+            model_name=entry.model_name,
+            dimensions=entry.dimensions,
+        )
+        if model.distance != entry.distance:
             raise CannotRestore(
-                f"No vector table for {model.table_name}. "
-                f"Create it with: uv run python -m db.setup"
+                f"{model.label} is indexed for {model.distance} distance, but "
+                f"the file's vectors are for {entry.distance}."
             )
-        if (model.dimensions, model.distance) != (entry.dimensions, entry.distance):
-            raise CannotRestore(
-                f"{model.table_name} holds {model.dimensions} dimensions at "
-                f"{model.distance} distance, but the file's vectors are "
-                f"{entry.dimensions} at {entry.distance}."
-            )
-        models.append(model)
+        models.append((entry.label, model))
     return models
 
 
@@ -97,6 +95,19 @@ def conflicting_document(
     return None
 
 
+def _with_fresh_ids(exported: ExportedDocument) -> ExportedDocument:
+    """The same document under new document and chunk ids. Vectors travel
+    with their chunk, so they follow."""
+    return dataclasses.replace(
+        exported,
+        document_id=uuid.uuid4(),
+        chunks=[
+            dataclasses.replace(chunk, chunk_id=uuid.uuid4())
+            for chunk in exported.chunks
+        ],
+    )
+
+
 def restore_export(
     conn: psycopg.Connection,
     user_id: int,
@@ -114,11 +125,20 @@ def restore_export(
     which is the lowest-numbered model that embedded it. A file carrying no
     vectors at all restores its chunks and is searched by nothing, which is
     the same state deleting a document's embeddings leaves behind.
+
+    The file's ids are kept unless another user's document already has them --
+    an export handed from one user to another while the original still
+    exists. Then the copy gets fresh ids.
     """
     models = _registered(conn, exported.models)
 
     if replace is not None:
         delete_document_rows(conn, user_id, uuid.UUID(replace))
+
+    # The user's own document with this id was reported as a conflict or
+    # deleted above, so one still here is someone else's.
+    if document_id_taken(conn, exported.document_id):
+        exported = _with_fresh_ids(exported)
 
     restore_document(
         conn,
@@ -131,23 +151,17 @@ def restore_export(
     )
 
     embedded = {}
-    for model in models:
+    for label, model in models:
         rows = [
-            (
-                chunk.chunk_id,
-                user_id,
-                exported.document_id,
-                chunk.content,
-                chunk.embeddings[model.table_name],
-            )
+            (chunk.chunk_id, chunk.embeddings[label])
             for chunk in exported.chunks
-            if model.table_name in chunk.embeddings
+            if label in chunk.embeddings
         ]
-        embedded[model.table_name] = insert_vectors(conn, model.table_name, rows)
+        embedded[model.label] = insert_vectors(conn, model, exported.document_id, rows)
         if rows:
             mark_embedded(conn, exported.document_id, model.id)
 
-    searched = next((m for m in models if embedded[m.table_name]), None)
+    searched = next((m for _, m in models if embedded[m.label]), None)
     if searched is not None:
         set_document_model(conn, user_id, exported.document_id, searched.id)
 
@@ -157,6 +171,6 @@ def restore_export(
         "source_uri": exported.source_uri,
         "chunks": count_chunks(conn, exported.document_id),
         "embedded": embedded,
-        "search_model": searched.table_name if searched else None,
+        "search_model": searched.label if searched else None,
         "replaced_existing": replace is not None,
     }

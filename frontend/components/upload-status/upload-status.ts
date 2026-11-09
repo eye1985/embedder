@@ -78,12 +78,12 @@ export function uploadStatus(node: HTMLElement): UploadStatusView {
       // model already held every chunk -- not that anything failed. The marked
       // chip is the model the document is now searched with.
       const chips = chipRow();
-      for (const [table, n] of Object.entries(result.embedded)) {
+      for (const [label, n] of Object.entries(result.embedded)) {
         chips.append(
           chip({
-            name: table,
+            name: label,
             count: `+${count(n)}`,
-            active: table === result.search_model,
+            active: label === result.search_model,
             zero: !n,
           }),
         );

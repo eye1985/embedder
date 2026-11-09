@@ -1,8 +1,9 @@
 # embeddings
 
 Ingest PDFs into a local Postgres/pgvector store and chat over them, using
-LangChain. Each user can hold several kinds of embedding side by side -- one
-vector table per model -- and chunks are stored once, independent of any model.
+LangChain. Each user can hold several kinds of embedding side by side -- all in
+one `chunk_embeddings` table, each model behind its own partial index -- and
+chunks are stored once, independent of any model.
 
 ## Requirements
 
@@ -22,7 +23,7 @@ npm install                  # frontend dependencies
 npm run build                # bundle frontend/ into static/ -- required once
 docker compose up -d         # Postgres on 5432, pgAdmin on 5050
 echo 'OPENAI_API_KEY=sk-...' > .env
-uv run python -m db.setup    # migrations, then one vector table per active model
+uv run python -m db.setup    # apply migrations
 ```
 
 | service  | port | credentials                                        |
@@ -33,14 +34,8 @@ uv run python -m db.setup    # migrations, then one vector table per active mode
 Override with `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_PORT`,
 `PGADMIN_DEFAULT_EMAIL`, `PGADMIN_DEFAULT_PASSWORD`, `PGADMIN_PORT`.
 
-Migration `005_seed_user.sql` creates user id 1 (`testuser@mail.com`), which is
-what `CURRENT_USER_ID` defaults to. It is a development seed -- drop it before
-deploying. Add your own:
-
-```bash
-psql -h localhost -U postgres -d postgres \
-  -c "insert into users (email) values ('you@example.com');"
-```
+Users come from Auth0. Sign in at `/login`; the `users`
+row is created the first time an account signs in.
 
 ## Running
 
@@ -97,7 +92,7 @@ test/
       test_adding_a_model.py     The feature, and retrieval left alone.
       test_idempotency.py        A repeat writes nothing and duplicates nothing.
       test_stored_chunks.py      Chunks are the input; the PDF is never reread.
-      test_refusals.py           No vector table, and someone else's document.
+      test_refusals.py           An unknown model, and someone else's document.
     chat_sources/       What an answer says about where a passage came from.
       test_what_a_source_offers.py  PDF, restored from JSON, or file gone.
     chat_history/       A stored conversation, and what its answers still cite.
@@ -127,9 +122,9 @@ Two things keep that safe and free, both in `test/conftest.py`:
   `TEST_DATABASE_NAME`.
 - A fake embedding service (`test/fakes.py`) that returns deterministic
   unit vectors at the model's width. It is installed session-wide and
-  autouse, so no test can reach OpenAI by accident -- but the real
-  PGVectorStore still does the writing, so the foreign keys, the unique
-  constraint on `chunk_id` and the `halfvec` column are genuinely exercised.
+  autouse, so no test can reach OpenAI by accident -- but the real SQL still
+  does the writing and searching, so the foreign keys, the partial indexes and
+  the `halfvec` column are genuinely exercised.
 
 Tables are truncated between tests rather than wrapped in a rolled-back
 transaction, and that is forced by the design under test: `begin_job` claims
@@ -140,19 +135,13 @@ those rows.
 ## Schema
 
 ```bash
-uv run python -m db.setup                              # apply migrations, create missing tables
-uv run python -m db.setup --list                       # every model, and whether its table exists
-uv run python -m db.setup --model emb_qwen3_0_6b       # one model's table, active or not
-uv run python -m db.setup --recreate                   # DROPS the vector tables first
+uv run python -m db.setup    # apply migrations
 ```
 
 Plain SQL migrations live in `sql/`, applied in filename order and tracked in
 `schema_migrations`. Add one by dropping in `00N_name.sql` and re-running.
-Vector-table DDL is in `db/setup.py` instead, since its name and width come
-from the registry.
 
-`--recreate` destroys embeddings but not documents or chunks, so you can
-re-embed without re-extracting. Starting over completely:
+Starting over completely:
 
 ```bash
 psql -h localhost -U postgres -d postgres \
@@ -160,26 +149,21 @@ psql -h localhost -U postgres -d postgres \
 uv run python -m db.setup
 ```
 
-### Adding an embedding model
+### Embedding models
 
-```sql
-insert into embedding_models (provider, model_name, dimensions, table_name)
-values ('openai', 'text-embedding-3-large', 1024, 'emb_openai_te3_large_1024');
-```
-
-Re-run `db/setup.py`, then teach `get_embeddings()` in `db/vectors.py` about the
-provider if it is new. `openai`, `qwen` and `huggingface` are handled; the last
-two need `uv add langchain-huggingface sentence-transformers`.
-
-The column type follows `dimensions` and is not yours to pick: `vector(n)` up to
-2000, `halfvec(n)` to 4000 (both HNSW-indexed), `halfvec(n)` unindexed above
-that.
+The models are seeded in `sql/002` with fixed ids, and each has a partial HNSW
+index in `sql/009` naming that id. Every model's vectors share
+`chunk_embeddings`: up to 2000 dimensions in `embedding` (`vector`), wider in
+`embedding_half` (`halfvec`, indexable to 4000). Only the `openai` provider is
+handled by `get_embeddings()` in `db/vectors.py`.
 
 ## API
 
-Four pages, all scoped to `CURRENT_USER_ID` until there is real auth: `/`
-(chat), `/upload`, `/documents`, `/jobs`. The JSON API is prefixed with `/api`
-so a route can never collide with a page.
+Five pages: `/` (chat), `/login`, `/upload`, `/documents`, `/jobs`. Chat is
+open to everyone -- signed out it searches public documents only and stores
+nothing. The other three redirect to `/login`, and their endpoints answer 401
+without a session. The JSON API is prefixed with `/api` so a route can never
+collide with a page.
 
 | method | route | purpose |
 | ------ | ----- | ------- |
@@ -198,7 +182,7 @@ so a route can never collide with a page.
 | `POST` | `/api/documents/import` | Upload such a download back, exactly as it was. |
 | `POST` | `/api/documents/{id}/embeddings` | Embed an existing document with more models. |
 | `DELETE` | `/api/documents/{id}/embeddings` | Delete vectors, keep the chunks. |
-| `PUT` | `/api/documents/{id}/search-model/{table}` | Choose which model retrieves it. |
+| `PUT` | `/api/documents/{id}/search-model/{model_id}` | Choose which model retrieves it. |
 | `GET` | `/api/embeddings` | Download every document as a zip. |
 | `GET` | `/api/jobs/current` | Whether a job is running, and the last outcome. |
 | `GET` | `/api/jobs` | Every job, newest first, with what it wrote. |
@@ -206,10 +190,12 @@ so a route can never collide with a page.
 | `DELETE` | `/api/jobs/{id}` | Forget a job row, freeing a stuck slot. |
 
 ```bash
-# upload -- `models` is repeatable; omitted, the user's default model is used
+# upload -- `models` is a repeatable model id; omitted, the user's default
+# model is used. Counts in the responses are keyed by model label,
+# e.g. "openai/text-embedding-3-small@1536".
 curl -X POST http://localhost:8000/api/upload \
   -F 'file=@sample/storybook.pdf' \
-  -F 'models=emb_openai_te3_small'
+  -F 'models=1'
 
 curl http://localhost:8000/api/jobs/current
 curl http://localhost:8000/api/jobs
@@ -231,13 +217,13 @@ curl -X POST http://localhost:8000/api/documents/import \
   -F 'file=@<id>-<title>.json' -F 'overwrite=true'
 
 curl -X POST http://localhost:8000/api/documents/<id>/embeddings \
-  -H 'Content-Type: application/json' -d '{"models":["emb_qwen3_0_6b"]}'
+  -H 'Content-Type: application/json' -d '{"models":[2]}'
 curl -X PATCH http://localhost:8000/api/documents/<id> \
   -H 'Content-Type: application/json' -d '{"searchable":false}'
-curl -X PUT http://localhost:8000/api/documents/<id>/search-model/emb_qwen3_0_6b
+curl -X PUT http://localhost:8000/api/documents/<id>/search-model/2
 
 curl -X DELETE http://localhost:8000/api/documents/<id>
-curl -X DELETE 'http://localhost:8000/api/documents/<id>/embeddings?model=emb_qwen3_0_6b'
+curl -X DELETE 'http://localhost:8000/api/documents/<id>/embeddings?model=2'
 
 curl -X POST http://localhost:8000/api/jobs/<job-id>/rerun
 curl -X DELETE http://localhost:8000/api/jobs/<job-id>
@@ -273,7 +259,7 @@ from indexing.pdf import import_pdf
 from paths import PROJECT_ROOT
 
 with connection() as conn:
-    models = [get_model(conn, table_name="emb_openai_te3_small")]
+    models = [get_model(conn, model_id=1)]
     import_pdf(conn, 1, PROJECT_ROOT / "sample/storybook.pdf", models)
 ```
 
@@ -298,21 +284,21 @@ api/            Speaks HTTP. No SQL of its own, no pipeline.
     conversations.py  Stored chat history read back: the list, one transcript.
     sources.py    A source_uri resolved to a file, and stored citations to chips.
     uploads.py    Where an uploaded file lands.
-  config.py     CURRENT_USER_ID and the frontend directories.
+  config.py     The frontend directories.
   schemas.py    Response models. What the generated frontend types come from.
   assets.py     Resolves a frontend entry to built URLs via the Vite manifest.
   server.py     The app: lifespan, static mount, error handlers.
 db/             Talks to Postgres. Every SQL statement lives here.
   tables/       Row access, one module per table group.
   pool.py       Connection settings and the psycopg pool.
-  vectors.py    Embedding-service factory, cached engines and vector stores.
-  setup.py      Migration runner and vector-table DDL. The only place running DDL.
+  vectors.py    Embedding-service factory, cached per model.
+  setup.py      Migration runner.
 indexing/       Files into embeddings. extract -> chunk -> embed, pdf.py on top.
 llm/chat.py     Builds the retrieval graph for one user. Holds no history:
                 every turn is handed the conversation it answers against.
   context_management/  How that history is kept bounded. One strategy is chosen.
 paths.py        PROJECT_ROOT, which every stored source_uri is relative to.
-sql/            Migrations. Vector-table DDL is in db/setup.py.
+sql/            Migrations. All DDL, including every vector index.
 test/           Fixtures, fakes and builders; integration/ is one dir per feature.
 templates/      Jinja2 page shells. base.html holds the only copy of the nav.
 frontend/       styles/, components/, lib/, pages/, main.css. Built into static/.
@@ -325,18 +311,17 @@ static/         Build output. Git-ignored; npm run build recreates it.
 
 | variable | default | purpose |
 | -------- | ------- | ------- |
-| `DATABASE_URL` | `postgresql://postgres:admin@localhost:5432/postgres` | Postgres DSN. The SQLAlchemy form is derived from it. |
+| `DATABASE_URL` | `postgresql://postgres:admin@localhost:5432/postgres` | Postgres DSN. |
 | `OPENAI_API_KEY` | -- | Required. |
-| `CURRENT_USER_ID` | `1` | Which user the API acts as, pending auth. |
+| `AUTH0_DOMAIN` / `AUTH0_CLIENT_ID` / `AUTH0_CLIENT_SECRET` | -- | Required. The Auth0 application. |
+| `AUTH0_SECRET` | -- | Required. Signs the session cookie. |
+| `APP_BASE_URL` | -- | Required. Where Auth0 sends the user back, e.g. `http://localhost:8000`. |
 | `VITE_DEV_SERVER` | -- | Serve assets from Vite instead of `static/`. |
 | `DB_POOL_MIN_SIZE` / `DB_POOL_MAX_SIZE` | `1` / `10` | psycopg pool bounds. |
 | `DB_POOL_TIMEOUT` | `30` | Seconds to wait for a free connection. |
-| `DB_ENGINE_POOL_SIZE` / `DB_ENGINE_MAX_OVERFLOW` | `5` / `10` | SQLAlchemy pool, used by `PGVectorStore`. |
 
-Two pools, both on psycopg 3: the psycopg one in `db/pool.py` for plain SQL, and
-SQLAlchemy's inside `PGEngine` for everything `PGVectorStore` does. Worst case
-is `10 + 5 + 10 = 25` connections per process against a default
-`max_connections` of 100 -- size them down before running more than two workers.
+One pool, in `db/pool.py`: at most `DB_POOL_MAX_SIZE` connections per process
+against a default `max_connections` of 100.
 
 ## Chunking
 

@@ -29,14 +29,14 @@ class InvalidExport(Exception):
 
 @dataclass(frozen=True)
 class ExportedModel:
-    """One entry of the file's `models`, identifying a vector table.
+    """One entry of the file's `models`, identifying an embedding model.
 
-    Carried so the registry row it names can be checked against it before any
-    vector is written -- a table whose width has changed would otherwise take
-    the rows and leave them unusable.
+    `label` is only the key the file uses for it. The registry row is found by
+    provider, model name and dimensions, and its distance checked against the
+    file before any vector is written.
     """
 
-    table_name: str
+    label: str
     provider: str
     model_name: str
     dimensions: int
@@ -49,8 +49,8 @@ class ExportedChunk:
     chunk_index: int
     content: str
     metadata: dict
-    # Keyed by vector table name. A model that embedded the document but not
-    # this chunk exports null, and is left out here.
+    # Keyed by model label. A model that embedded the document but not this
+    # chunk exports null, and is left out here.
     embeddings: dict[str, list[float]]
 
 
@@ -132,12 +132,12 @@ def _models(payload: dict) -> list[ExportedModel]:
     its chunks and no models, and restores to that same state.
     """
     models = []
-    for table_name, info in _mapping(payload.get("models", {}), "models").items():
-        where = f"models.{table_name}"
+    for label, info in _mapping(payload.get("models", {}), "models").items():
+        where = f"models.{label}"
         info = _mapping(info, where)
         models.append(
             ExportedModel(
-                table_name=table_name,
+                label=label,
                 provider=_require(info, "provider", str, where),
                 model_name=_require(info, "model_name", str, where),
                 dimensions=_require(info, "dimensions", int, where),
@@ -152,7 +152,7 @@ def _vector(value, model: ExportedModel, where: str) -> list[float]:
         raise InvalidExport(f"{where} should be a list of numbers.")
     if len(value) != model.dimensions:
         raise InvalidExport(
-            f"{where} has {len(value)} dimensions, but {model.table_name} "
+            f"{where} has {len(value)} dimensions, but {model.label} "
             f"holds {model.dimensions}."
         )
     for number in value:
@@ -166,7 +166,7 @@ def _chunks(payload: dict, models: list[ExportedModel]) -> list[ExportedChunk]:
     if not isinstance(rows, list):
         raise InvalidExport("chunks should be a list.")
 
-    by_name = {m.table_name: m for m in models}
+    by_label = {m.label: m for m in models}
     chunks = []
     seen_ids: set[uuid.UUID] = set()
     seen_indexes: set[int] = set()
@@ -185,20 +185,18 @@ def _chunks(payload: dict, models: list[ExportedModel]) -> list[ExportedChunk]:
         seen_indexes.add(chunk_index)
 
         vectors = {}
-        for table_name, value in _mapping(
+        for label, value in _mapping(
             row.get("embeddings", {}), f"{where}.embeddings"
         ).items():
-            model = by_name.get(table_name)
+            model = by_label.get(label)
             if model is None:
                 raise InvalidExport(
-                    f"{where}.embeddings names {table_name!r}, which the file's "
+                    f"{where}.embeddings names {label!r}, which the file's "
                     f"`models` does not describe."
                 )
             if value is None:
                 continue
-            vectors[table_name] = _vector(
-                value, model, f"{where}.embeddings.{table_name}"
-            )
+            vectors[label] = _vector(value, model, f"{where}.embeddings.{label}")
 
         chunks.append(
             ExportedChunk(
@@ -218,8 +216,7 @@ def parse_export(data: bytes) -> ExportedDocument:
 
     Everything that can be known without the database is settled here, so a
     file that would fail halfway is refused before a single row is written.
-    The exported `user_id` is deliberately not read: a file restores into the
-    library of whoever uploads it.
+    A file restores into the library of whoever uploads it.
     """
     try:
         payload = json.loads(data, parse_constant=_reject_constant)
@@ -231,10 +228,10 @@ def parse_export(data: bytes) -> ExportedDocument:
     payload = _mapping(payload, "The file")
 
     version = _require(payload, "export_version", int, "The file")
-    if version > EXPORT_VERSION:
+    if version != EXPORT_VERSION:
         raise InvalidExport(
-            f"This file is export version {version}; this app reads up to "
-            f"{EXPORT_VERSION}."
+            f"This file is export version {version}; this app reads only "
+            f"version {EXPORT_VERSION}."
         )
 
     document = _mapping(_require(payload, "document", dict, "The file"), "document")

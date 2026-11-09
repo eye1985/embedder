@@ -45,10 +45,10 @@ export function modelPicker({
   // One model embedded means no choice to make, so the radios only appear from
   // two up. The current pick survives a rebuild if it is still being embedded.
   function refreshChoice() {
-    const tables = chosenModels();
+    const chosen = chosenModels();
     const keep = searchModel();
 
-    section.hidden = tables.length < 2;
+    section.hidden = chosen.length < 2;
     choices.replaceChildren();
     buttons = [];
 
@@ -77,8 +77,7 @@ export function modelPicker({
     onChange();
   }
 
-  // Fetched rather than hardcoded: which models exist is a database question,
-  // and a row without a vector table cannot be embedded into.
+  // Fetched rather than hardcoded: which models exist is a database question.
   async function load(): Promise<void> {
     try {
       const models = await listModels();
@@ -90,13 +89,13 @@ export function modelPicker({
         const label = `${model.provider} · ${model.model_name}`;
         const option = el(
           "label",
-          model.available ? "model" : "model unavailable",
+          model.is_active ? "model" : "model unavailable",
         );
 
         const box = input("checkbox", {
-          value: model.table_name,
+          value: String(model.model_id),
           checked: model.is_upload_default,
-          disabled: !model.available,
+          disabled: !model.is_active,
         });
         box.addEventListener("change", refreshChoice);
         option.append(box);
@@ -107,15 +106,15 @@ export function modelPicker({
           el(
             "span",
             "model-meta",
-            model.available
-              ? `${model.table_name} · ${model.dimensions}d${model.is_upload_default ? " · default" : ""}`
-              : `${model.table_name} · no vector table — run python -m db.setup`,
+            model.is_active
+              ? `${model.dimensions}d${model.is_upload_default ? " · default" : ""}`
+              : `${model.dimensions}d · inactive`,
           ),
         );
         option.append(text);
 
         options.append(option);
-        boxes.push({ box, available: model.available, label });
+        boxes.push({ box, available: model.is_active, label });
       }
       refreshChoice();
     } catch (error) {

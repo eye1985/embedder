@@ -15,17 +15,17 @@ def test_a_running_upload_turns_a_reembed_away(conn, client, large_model):
 
     response = client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [large_model.table_name]},
+        json={"models": [large_model.id]},
     )
 
     assert response.status_code == 409
     assert "An upload is already in progress (other.pdf)" in response.json()["detail"]
-    assert vector_count(conn, large_model.table_name, document_id) == 0, (
+    assert vector_count(conn, large_model, document_id) == 0, (
         "the refusal must happen before any embedding is paid for"
     )
 
 
-def test_a_running_reembed_turns_an_upload_away(conn, client):
+def test_a_running_reembed_turns_an_upload_away(conn, client, small_model):
     """And the other direction: embedding holds the slot against an upload.
 
     The posted bytes are not a real PDF, which is the point -- the slot is
@@ -37,7 +37,7 @@ def test_a_running_reembed_turns_an_upload_away(conn, client):
     response = client.post(
         "/api/upload",
         files={"file": ("new.pdf", b"not a real pdf", "application/pdf")},
-        data={"models": ["emb_openai_te3_small"]},
+        data={"models": [str(small_model.id)]},
     )
 
     assert response.status_code == 409
@@ -55,8 +55,8 @@ def test_two_reembeds_cannot_run_at_once(conn, client, small_model, large_model)
 
     response = client.post(
         f"/api/documents/{second}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
 
     assert response.status_code == 409
-    assert vector_count(conn, small_model.table_name, second) == 0
+    assert vector_count(conn, small_model, second) == 0

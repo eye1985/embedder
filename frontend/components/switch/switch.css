@@ -14,6 +14,11 @@
   transition: color 120ms, border-color 120ms;
 }
 
+/* Sized to its label, not stretched across a column. */
+.section > .switch {
+  align-self: flex-start;
+}
+
 .switch:hover {
   border-color: var(--rule-strong);
 }

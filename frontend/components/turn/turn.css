@@ -300,7 +300,8 @@ a.source:hover {
 
 /* Restored from a JSON export: nothing is wrong with it, so it keeps full
    contrast and carries a tag instead. Still not a link. */
-.source.restored {
+.source.restored,
+.source.shared {
   cursor: default;
 }
 

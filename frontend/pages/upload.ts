@@ -15,6 +15,7 @@ const POLL_MS = 1500;
 
 const form = mustBe("form", HTMLFormElement);
 const submit = mustBe("submit", HTMLButtonElement);
+const publicBox = mustBe("public", HTMLInputElement);
 const status = uploadStatus(must("status"));
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -39,18 +40,19 @@ const drop = dropzone({
 // models the search choice is required too: the server refuses without it
 // rather than picking one invisibly.
 function refreshSubmit(): void {
-  const tables = picker.chosenModels();
+  const chosen = picker.chosenModels();
   submit.disabled =
     busy ||
     !drop.file() ||
-    !tables.length ||
-    (tables.length > 1 && !picker.searchModel());
+    !chosen.length ||
+    (chosen.length > 1 && !picker.searchModel());
 }
 
 function setBusy(on: boolean): void {
   busy = on;
   drop.setBusy(on);
   picker.setBusy(on);
+  publicBox.disabled = on;
   submit.textContent = on ? "Embedding…" : "Upload and embed";
   refreshSubmit();
 }
@@ -129,9 +131,10 @@ form.addEventListener("submit", (event) => {
 
   const body = new FormData();
   body.append("file", picked);
-  for (const table of picker.chosenModels()) body.append("models", table);
+  for (const modelId of picker.chosenModels()) body.append("models", modelId);
   const searched = picker.searchModel();
   if (searched) body.append("search_model", searched);
+  body.append("visibility", publicBox.checked ? "public" : "private");
 
   setBusy(true);
   status.progress(picked.name, 0, "upload");

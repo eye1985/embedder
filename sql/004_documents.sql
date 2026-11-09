@@ -1,5 +1,5 @@
 -- Provider-agnostic source of truth. Text is chunked once here, then embedded
--- by any number of models -- each into its own vector table.
+-- by any number of models into `chunk_embeddings`.
 
 create table documents (
     id         uuid primary key default gen_random_uuid(),
@@ -10,6 +10,10 @@ create table documents (
     -- Per-model state lives in document_embeddings and is left untouched, so
     -- switching a document back on restores exactly the models it had.
     searchable boolean not null default true,
+    -- Who chat may retrieve this from: the owner only, or everyone. Managing
+    -- the document stays with the owner either way.
+    visibility text not null default 'private'
+               check (visibility in ('private', 'public')),
     -- Where these rows came from. 'upload' means a PDF this app extracted and
     -- still has on disk to offer; 'import' means a JSON export restored back
     -- in, which carries chunks and vectors but no file. The two are not the
@@ -29,7 +33,7 @@ create table document_chunks (
     chunk_index int  not null,
     content     text not null,
     -- Page numbers and the like, from the PDF extractor. Kept here rather than
-    -- duplicated into every vector table; join back on chunk_id for citations.
+    -- duplicated onto every vector; join back on chunk_id for citations.
     metadata    jsonb not null default '{}'::jsonb,
 
     unique (document_id, chunk_index)

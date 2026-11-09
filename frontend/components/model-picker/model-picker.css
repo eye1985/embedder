@@ -49,7 +49,7 @@
   overflow-wrap: anywhere;
 }
 
-/* Registered, but db.setup has not created its vector table. */
+/* Registered, but inactive. */
 .model.unavailable {
   opacity: 0.45;
   cursor: not-allowed;

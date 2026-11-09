@@ -17,7 +17,7 @@ def test_deleting_a_finished_job_removes_only_the_row(conn, client, small_model)
     document_id = a_document(conn, title="Nutrition", chunks=3)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
 
     response = client.delete("/api/jobs/1")
@@ -30,7 +30,7 @@ def test_deleting_a_finished_job_removes_only_the_row(conn, client, small_model)
         conn.execute("select 1 from documents where id = %s", (document_id,)).fetchone()
         is not None
     )
-    assert vector_count(conn, small_model.table_name, document_id) == 3
+    assert vector_count(conn, small_model, document_id) == 3
 
 
 def test_deleting_a_stuck_running_job_frees_the_slot(conn, client, small_model):
@@ -45,7 +45,7 @@ def test_deleting_a_stuck_running_job_frees_the_slot(conn, client, small_model):
     assert (
         client.post(
             f"/api/documents/{document_id}/embeddings",
-            json={"models": [small_model.table_name]},
+            json={"models": [small_model.id]},
         ).status_code
         == 409
     )
@@ -55,7 +55,7 @@ def test_deleting_a_stuck_running_job_frees_the_slot(conn, client, small_model):
     assert (
         client.post(
             f"/api/documents/{document_id}/embeddings",
-            json={"models": [small_model.table_name]},
+            json={"models": [small_model.id]},
         ).status_code
         == 200
     )

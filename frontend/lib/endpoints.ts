@@ -4,6 +4,7 @@ import type { components } from "./api-types";
 type Schemas = components["schemas"];
 
 export type DocumentOut = Schemas["DocumentOut"];
+export type Visibility = DocumentOut["visibility"];
 export type ModelOut = Schemas["ModelOut"];
 export type JobStatusOut = Schemas["JobStatus"];
 export type JobOut = Schemas["JobOut"];
@@ -75,15 +76,20 @@ export const setSearchable = (id: string, searchable: boolean) =>
     searchable,
   });
 
-export const setSearchModel = (id: string, table: string) =>
+export const setVisibility = (id: string, visibility: Visibility) =>
+  send<Schemas["VisibilityResult"]>(`/api/documents/${id}/visibility`, "PUT", {
+    visibility,
+  });
+
+export const setSearchModel = (id: string, modelId: number) =>
   send<Schemas["SearchModelResult"]>(
-    `/api/documents/${id}/search-model/${table}`,
+    `/api/documents/${id}/search-model/${modelId}`,
     "PUT",
   );
 
 // Embeds chunks that are already stored, so no PDF is read again. Holds the
 // same one-job-per-user slot an upload does, so this 409s while one runs.
-export const embedExisting = (id: string, models: string[]) =>
+export const embedExisting = (id: string, models: number[]) =>
   send<Schemas["EmbedResult"]>(`/api/documents/${id}/embeddings`, "POST", {
     models,
   });

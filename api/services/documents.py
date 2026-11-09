@@ -14,17 +14,12 @@ import uuid
 import psycopg
 
 from api.services.export import build_archive, export_document
-from api.services.uploads import UPLOAD_DIR
-from db.tables.documents import (
-    count_chunks,
-    delete_vectors,
-    document_rows,
-    embedded_counts,
-    get_document,
-)
+from api.services.uploads import user_upload_dir
+from db.tables.chunk_embeddings import delete_vectors, embedded_counts
+from db.tables.documents import count_chunks, document_rows, get_document
 from db.tables.documents import delete_document as delete_document_rows
 from db.tables.embeddings import models_by_document, unmark_embedded
-from db.tables.registry import list_models, models_with_tables
+from db.tables.registry import list_models
 from indexing.embed import embed_document
 from paths import PROJECT_ROOT
 
@@ -32,9 +27,9 @@ from paths import PROJECT_ROOT
 def list_documents(conn: psycopg.Connection, user_id: int) -> list[dict]:
     """The user's documents, newest first, with chunk counts and search state.
 
-    Every registered model appears in `embedded`, including ones with no table
-    yet -- a zero there means "not embedded by this model", which is the
-    question the caller is asking.
+    Every registered model appears in `embedded`, keyed by its label -- a zero
+    there means "not embedded by this model", which is the question the caller
+    is asking.
 
     `search_model` names the one model the document is retrieved through, or
     is null if it has none -- which is also what a document nothing has
@@ -42,10 +37,9 @@ def list_documents(conn: psycopg.Connection, user_id: int) -> list[dict]:
     overrides it either way.
     """
     models = list_models(conn, active_only=False)
-    readable = [m.table_name for m in models_with_tables(conn)]
-    counts = embedded_counts(conn, user_id, readable)
+    counts = embedded_counts(conn, user_id)
     flags = models_by_document(conn, user_id)
-    table_names = {m.id: m.table_name for m in models}
+    labels = {m.id: m.label for m in models}
 
     return [
         {
@@ -54,16 +48,16 @@ def list_documents(conn: psycopg.Connection, user_id: int) -> list[dict]:
             "source_uri": source_uri,
             "created_at": created_at.isoformat(),
             "searchable": searchable,
+            "visibility": visibility,
             "chunks": chunks,
             "embedded": {
-                m.table_name: counts.get(m.table_name, {}).get(document_id, 0)
-                for m in models
+                m.label: counts.get(m.id, {}).get(document_id, 0) for m in models
             },
             "search_model": next(
                 (
-                    table_names[model_id]
+                    labels[model_id]
                     for model_id, searched in flags.get(document_id, {}).items()
-                    if searched and model_id in table_names
+                    if searched and model_id in labels
                 ),
                 None,
             ),
@@ -74,6 +68,7 @@ def list_documents(conn: psycopg.Connection, user_id: int) -> list[dict]:
             source_uri,
             created_at,
             searchable,
+            visibility,
             chunks,
         ) in document_rows(conn, user_id)
     ]
@@ -88,17 +83,18 @@ def export_archive(conn: psycopg.Connection, user_id: int) -> tuple[bytes, str]:
     return build_archive(conn, user_id, list_documents(conn, user_id))
 
 
-def _delete_stored_pdf(source_uri: str | None) -> bool:
+def _delete_stored_pdf(source_uri: str | None, user_id: int) -> bool:
     """Remove the stored PDF behind a document, if the user uploaded it.
 
-    Only `uploads/` is cleaned. `sample/` holds the repo's own PDFs, which are
-    not a user's to delete -- so deleting a document imported from there
-    removes the rows and leaves the file.
+    Only the user's own upload folder is cleaned. `sample/` holds the repo's
+    own PDFs, and another user's folder holds theirs -- a restored export can
+    name either -- so deleting such a document removes the rows and leaves
+    the file.
     """
     if not source_uri:
         return False
     path = (PROJECT_ROOT / source_uri).resolve()
-    if not path.is_relative_to(UPLOAD_DIR) or not path.is_file():
+    if not path.is_relative_to(user_upload_dir(user_id)) or not path.is_file():
         return False
     path.unlink()
     return True
@@ -108,7 +104,7 @@ def delete_embeddings(
     conn: psycopg.Connection,
     user_id: int,
     document_id: uuid.UUID,
-    table_name: str | None = None,
+    model_id: int | None = None,
 ) -> dict:
     """Delete a document's vectors, keeping the document and its chunks.
 
@@ -120,15 +116,15 @@ def delete_embeddings(
     """
     _, _, title, source_uri, _ = get_document(conn, user_id, document_id)
 
-    models = models_with_tables(conn)
-    if table_name is not None:
-        models = [m for m in models if m.table_name == table_name]
+    models = list_models(conn, active_only=False)
+    if model_id is not None:
+        models = [m for m in models if m.id == model_id]
         if not models:
-            raise LookupError(f"No vector table named {table_name!r}.")
+            raise LookupError(f"No embedding model {model_id}.")
 
     removed = {}
     for model in models:
-        removed[model.table_name] = delete_vectors(conn, document_id, model.table_name)
+        removed[model.label] = delete_vectors(conn, document_id, model.id)
         # The pairing claims vectors that are gone, so it goes with them --
         # back to "never embedded", which is the state that is now true.
         unmark_embedded(conn, document_id, model.id)
@@ -150,11 +146,10 @@ def delete_document(
 
     # Counted before the delete -- afterwards there is nothing left to count.
     chunks = count_chunks(conn, document_id)
-    readable = [m.table_name for m in models_with_tables(conn)]
-    counts = embedded_counts(conn, user_id, readable)
+    counts = embedded_counts(conn, user_id)
     removed = {
-        table: by_document.get(str(document_id), 0)
-        for table, by_document in counts.items()
+        m.label: counts.get(m.id, {}).get(str(document_id), 0)
+        for m in list_models(conn, active_only=False)
     }
 
     delete_document_rows(conn, user_id, document_id)
@@ -165,7 +160,7 @@ def delete_document(
         "source_uri": source_uri,
         "deleted_chunks": chunks,
         "deleted_embeddings": removed,
-        "deleted_file": _delete_stored_pdf(source_uri),
+        "deleted_file": _delete_stored_pdf(source_uri, user_id),
     }
 
 
@@ -185,7 +180,7 @@ def embed_existing(
     """
     _, _, title, source_uri, _ = get_document(conn, user_id, document_id)
 
-    embedded = {m.table_name: embed_document(conn, document_id, m) for m in models}
+    embedded = {m.label: embed_document(conn, document_id, m) for m in models}
 
     return {
         "document_id": str(document_id),

@@ -15,8 +15,8 @@ import uuid
 
 from fastapi import APIRouter, HTTPException
 
-from api.config import CURRENT_USER_ID
-from api.routes.models import models_for
+from api.auth.users import CurrentUser
+from api.routes.models import models_by_label
 from api.schemas import DeleteJobResult, JobOut, JobStatus, RerunResult
 from api.services.documents import embed_existing
 from api.services.jobs import (
@@ -52,26 +52,26 @@ def slot_conflict(running: dict) -> HTTPException:
 
 
 @router.get("/jobs/current", response_model=JobStatus)
-def current_job_endpoint():
+def current_job_endpoint(user_id: CurrentUser):
     """Whether a job is running, and the outcome of the last one.
 
     A job outlives the page that started it -- a sync endpoint runs in a thread
     no client disconnect can cancel -- so this is how a reloaded page finds out
     it is still waiting, and what happened.
     """
-    return current_job(CURRENT_USER_ID)
+    return current_job(user_id)
 
 
 @router.get("/jobs", response_model=list[JobOut])
-def list_jobs_endpoint():
+def list_jobs_endpoint(user_id: CurrentUser):
     """The user's jobs, newest first."""
     with connection() as conn:
-        return list_jobs(conn, CURRENT_USER_ID)
+        return list_jobs(conn, user_id)
 
 
 # Sync `def` for the same reason as POST /upload: this calls the embedding API.
 @router.post("/jobs/{job_id}/rerun", response_model=RerunResult)
-def rerun_job_endpoint(job_id: int):
+def rerun_job_endpoint(job_id: int, user_id: CurrentUser):
     """Run a finished or interrupted job again.
 
     This is the repair path for a crash. Embedding skips chunks a model already
@@ -83,8 +83,8 @@ def rerun_job_endpoint(job_id: int):
     """
     with connection() as conn:
         try:
-            kind, subject, model_names, status, source_uri, document_id = get_job(
-                conn, CURRENT_USER_ID, job_id
+            kind, subject, labels, status, source_uri, document_id = get_job(
+                conn, user_id, job_id
             )
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
@@ -97,7 +97,7 @@ def rerun_job_endpoint(job_id: int):
             )
 
         plan, target = replay_plan(
-            conn, CURRENT_USER_ID, source_uri, str(document_id) if document_id else None
+            conn, user_id, source_uri, str(document_id) if document_id else None
         )
         if plan == "none":
             raise HTTPException(
@@ -105,13 +105,13 @@ def rerun_job_endpoint(job_id: int):
                 "Nothing left to re-run: this job's document and its source "
                 "file are both gone.",
             )
-        models = models_for(conn, model_names)
+        models = models_by_label(conn, labels)
 
     new_id, running = begin_job(
-        CURRENT_USER_ID,
+        user_id,
         kind,
         subject,
-        model_names,
+        labels,
         source_uri=source_uri,
         document_id=target,
     )
@@ -122,19 +122,17 @@ def rerun_job_endpoint(job_id: int):
         with connection() as conn:
             try:
                 if plan == "embed":
-                    result = embed_existing(
-                        conn, CURRENT_USER_ID, uuid.UUID(target), models
-                    )
+                    result = embed_existing(conn, user_id, uuid.UUID(target), models)
                 else:
                     # Resolved through the same check `replay_plan` used, so
                     # the path re-read here is the one it approved rather than
                     # the raw column joined onto PROJECT_ROOT again.
-                    pdf = source_path(source_uri)
+                    pdf = source_path(source_uri, user_id)
                     if pdf is None:
                         raise HTTPException(
                             404, f"No stored file at {source_uri!r} to re-import."
                         )
-                    result = import_pdf(conn, CURRENT_USER_ID, pdf, models)
+                    result = import_pdf(conn, user_id, pdf, models)
             except ExtractionFailed as exc:
                 raise HTTPException(422, str(exc)) from exc
             except LookupError as exc:
@@ -157,7 +155,7 @@ def rerun_job_endpoint(job_id: int):
 
 
 @router.delete("/jobs/{job_id}", response_model=DeleteJobResult)
-def delete_job_endpoint(job_id: int):
+def delete_job_endpoint(job_id: int, user_id: CurrentUser):
     """Forget a job row.
 
     Allowed on a running one, because that is the only way back from a row left
@@ -167,7 +165,7 @@ def delete_job_endpoint(job_id: int):
     """
     with connection() as conn:
         try:
-            delete_job(conn, CURRENT_USER_ID, job_id)
+            delete_job(conn, user_id, job_id)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
     return {"job_id": job_id, "deleted": True}

@@ -33,6 +33,11 @@
           {%- for href, label in [("/", "Chat"), ("/upload", "Upload"), ("/documents", "Documents"), ("/jobs", "Jobs")] %}
           <a href="{{ href }}"{% if href == current %} class="current"{% endif %}>{{ label }}</a>
           {%- endfor %}
+          {%- if signed_in %}
+          <a class="nav-account" href="/auth/logout">Log out</a>
+          {%- else %}
+          <a class="nav-account{% if current == '/login' %} current{% endif %}" href="/login">Sign in</a>
+          {%- endif %}
         </nav>
       </header>
 

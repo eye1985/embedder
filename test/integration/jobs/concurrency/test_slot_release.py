@@ -17,13 +17,13 @@ def test_the_slot_is_free_again_once_the_work_succeeds(
 
     first = client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     assert first.status_code == 200
 
     second = client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [large_model.table_name]},
+        json={"models": [large_model.id]},
     )
     assert second.status_code == 200, "the first job should no longer hold the slot"
 
@@ -51,7 +51,7 @@ def test_the_slot_is_free_again_even_when_the_work_fails(
     with pytest.raises(RuntimeError):
         client.post(
             f"/api/documents/{document_id}/embeddings",
-            json={"models": [small_model.table_name]},
+            json={"models": [small_model.id]},
         )
 
     assert job_statuses(conn) == {1: "failed"}

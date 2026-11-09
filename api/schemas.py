@@ -25,14 +25,18 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+Visibility = Literal["private", "public"]
+
 
 class ModelOut(BaseModel):
-    table_name: str
+    model_id: int
+    # `provider/model_name@dimensions`: what every count and search model below
+    # is keyed by, and what job history records.
+    label: str
     provider: str
     model_name: str
     dimensions: int
     is_active: bool
-    available: bool
     documents: int
     is_upload_default: bool
 
@@ -43,6 +47,7 @@ class DocumentOut(BaseModel):
     source_uri: str | None
     created_at: str
     searchable: bool
+    visibility: Visibility
     chunks: int
     embedded: dict[str, int]
     search_model: str | None
@@ -153,6 +158,11 @@ class SearchableResult(BaseModel):
     searchable: bool
 
 
+class VisibilityResult(BaseModel):
+    document_id: uuid.UUID
+    visibility: Visibility
+
+
 class SearchModelResult(BaseModel):
     document_id: uuid.UUID
     search_model: str
@@ -175,6 +185,7 @@ class ChatSource(BaseModel):
     # Declared as the two values `documents.origin` allows, so the generated
     # type is the union the sources panel switches on rather than `string`.
     origin: Literal["upload", "import"]
+    owned: bool
 
 
 class ConversationOut(BaseModel):
@@ -188,8 +199,6 @@ class ConversationOut(BaseModel):
 class MessageOut(BaseModel):
     seq: int
     role: Literal["user", "assistant"]
-    # As stored: an answer keeps the citation markers the model wrote, which
-    # the browser strips for the reader.
     content: str
     sources: list[ChatSource]
 

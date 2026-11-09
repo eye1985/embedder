@@ -20,15 +20,15 @@ def test_embedding_the_same_model_twice_writes_nothing_the_second_time(
 
     first = client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     second = client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
 
-    assert first.json()["embedded"] == {small_model.table_name: 4}
-    assert second.json()["embedded"] == {small_model.table_name: 0}
-    assert vector_count(conn, small_model.table_name, document_id) == 4, (
+    assert first.json()["embedded"] == {small_model.label: 4}
+    assert second.json()["embedded"] == {small_model.label: 0}
+    assert vector_count(conn, small_model, document_id) == 4, (
         "a repeat must not duplicate vectors"
     )

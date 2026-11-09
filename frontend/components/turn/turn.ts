@@ -31,8 +31,8 @@ function turn(role: Role, label: string, text: string) {
   return { node, body };
 }
 
-// The documents the answer cited, which the server works out from the markers
-// the model left in the text -- not everything retrieval turned up.
+// The documents the answer drew on, which the server works out by comparing
+// the answer with the passages -- not everything retrieval turned up.
 //
 // One chip per document on a wrapping row, each carrying the filename the
 // download arrives as. Pages live in the tooltip: ten chunks from one book is
@@ -56,13 +56,16 @@ function sourceList(
     const name = item.filename ?? item.title ?? "Untitled";
     const restored = item.origin === "import";
 
-    // Three states, not two. A document with its file is a download. One
-    // restored from a JSON export never had a file here -- its text came out
-    // of the user's own export, which is worth saying rather than leaving it
-    // looking like something went missing. Anything else fileless is a PDF
-    // that should be on disk and is not.
+    // Four states. Someone else's public document is never a download, only
+    // its owner can fetch the PDF. Of the user's own, one with its file is a
+    // download. One restored from a JSON export never had a file here -- its
+    // text came out of the user's own export, which is worth saying rather
+    // than leaving it looking like something went missing. Anything else
+    // fileless is a PDF that should be on disk and is not.
     let chip: HTMLElement;
-    if (item.has_source) {
+    if (!item.owned) {
+      chip = el("span", "source shared");
+    } else if (item.has_source) {
       const link = Object.assign(el("a", "source"), {
         href: documentSourceHref(item.document_id),
       });
@@ -79,11 +82,13 @@ function sourceList(
     chip.title = [
       name,
       item.pages.length > 0 ? `found on pages ${item.pages.join(", ")}` : "",
-      item.has_source
-        ? "click to download"
-        : restored
-          ? "imported from a JSON export — the text is stored, the PDF is not"
-          : "file no longer stored",
+      !item.owned
+        ? "shared by another user — only they can download it"
+        : item.has_source
+          ? "click to download"
+          : restored
+            ? "imported from a JSON export — the text is stored, the PDF is not"
+            : "file no longer stored",
     ]
       .filter((part) => part !== "")
       .join(" — ");
@@ -91,7 +96,9 @@ function sourceList(
     chip.append(el("span", "source-name", clip(name)));
     // Said on the chip, not only in the tooltip: a chip that is simply not
     // clickable looks broken until it says why.
-    if (!item.has_source && restored) {
+    if (!item.owned) {
+      chip.append(el("span", "source-tag", "shared"));
+    } else if (!item.has_source && restored) {
       chip.append(el("span", "source-tag", "from JSON"));
     }
     node.append(chip);

@@ -1,20 +1,24 @@
+import json
 import os
 import sys
 import threading
 from typing import Annotated, TypedDict
 
+import numpy as np
 from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_core.messages import AnyMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.vectorstores.utils import maximal_marginal_relevance
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 
+from db import vectors
 from db.pool import connection
+from db.tables.chunk_embeddings import nearest
 from db.tables.documents import cited_chunks
 from db.tables.registry import EmbeddingModel
-from db.vectors import get_vector_store
 from llm.context_management import (
     Conversation,
     SlidingWindow,  # noqa: F401  -- the alternative for HISTORY below
@@ -28,12 +32,18 @@ if not os.getenv("OPENAI_API_KEY"):
     print("Please set your OPENAI_API_KEY environment variable.", file=sys.stderr)
     sys.exit(1)
 
-# The model that answers. Overridable per deployment, as CURRENT_USER_ID is.
+# The model that answers. Overridable per deployment.
 CHAT_MODEL = os.getenv("CHAT_MODEL", "gpt-4o-mini")
 
 # Summarising writes notes nobody reads directly, so it does not need the
 # model that answers.
 UTILITY_MODEL = os.getenv("UTILITY_MODEL", "gpt-4o-mini")
+
+# When a passage is shown as a source. Both must hold.
+# Max cosine distance between the question and the passage.
+SOURCE_MAX_DISTANCE = 0.75
+# Min cosine similarity between the finished answer and the passage.
+SOURCE_MIN_ANSWER_SIMILARITY = 0.51
 
 _llm: ChatOpenAI | None = None
 _summarizer: ChatOpenAI | None = None
@@ -50,20 +60,12 @@ CONTEXT_PROMPT = ChatPromptTemplate.from_messages(
             "system",
             (
                 "Answer the question based on the provided context.\n"
-                "Each passage is headed by a number in brackets, then the "
-                "document it came from and its page. Those headers say where "
-                "the text is from; they are not part of it.\n"
-                "Put the number of every passage you draw on in brackets "
-                "right after the statement it supports -- '[1]', or '[1][3]' "
-                "where two documents support the same one. Passages from the "
-                "same document share a number.\n"
-                "Cite nothing you did not use: an uncited passage is reported "
-                "to the user as not having contributed to the answer.\n"
+                "Each passage is headed by the document it came from and its "
+                "page. Those headers say where the text is from; they are not "
+                "part of it.\n"
                 "The passages are whatever the search returned, and may not "
                 "cover the question. When they do not, say so plainly and "
-                "then answer from your own knowledge, citing nothing -- an "
-                "uncited answer is what tells the user it did not come from "
-                "their documents.\n\n"
+                "then answer from your own knowledge.\n\n"
                 "{context}"
             ),
         ),
@@ -149,35 +151,43 @@ HISTORY = Summarize(
 # HISTORY = SlidingWindow(keep_turns=6)
 
 
-def _retriever(
-    user_id: int, model: EmbeddingModel, document_ids: list[str], *, mmr: bool
-):
-    """A retriever over one model's table, scoped to one set of documents.
+def _retrieve(
+    model: EmbeddingModel, document_ids: list[str], question: str, *, mmr: bool
+) -> list[Document]:
+    """One model's closest chunks, scoped to one set of documents.
 
-    Both filters are applied by the search itself: HNSW picks its top-k before
-    any caller could drop rows afterwards.
+    The document filter is applied by the search itself: HNSW picks its top-k
+    before any caller could drop rows afterwards. The documents are already the
+    user's, so that filter is also what keeps other users' chunks out.
 
     MMR spreads the results out instead of returning ten near-duplicates, but
     it compares candidate vectors to each other, so it only means anything
     inside a single embedding space. A fan-out asks for plain similarity and
     lets the fusion below do the combining.
     """
-    search_kwargs = {
-        "k": TOP_K,
-        "filter": {
-            "$and": [
-                {"user_id": {"$eq": user_id}},
-                {"document_id": {"$in": document_ids}},
-            ]
-        },
-    }
-    if mmr:
-        search_kwargs["fetch_k"] = FETCH_K
+    query = vectors.embeddings_for(model).embed_query(question)
+    with connection() as conn:
+        rows = nearest(conn, model, query, document_ids, FETCH_K if mmr else TOP_K)
 
-    return get_vector_store(model).as_retriever(
-        search_type="mmr" if mmr else "similarity",
-        search_kwargs=search_kwargs,
+    documents = [
+        Document(
+            page_content=content,
+            metadata={
+                "chunk_id": chunk_id,
+                "distance": distance,
+                "model": model,
+                "vector": json.loads(vector),
+            },
+        )
+        for chunk_id, content, vector, distance in rows
+    ]
+    if not mmr or not documents:
+        return documents
+
+    picked = maximal_marginal_relevance(
+        np.array(query), [d.metadata["vector"] for d in documents], k=TOP_K
     )
+    return [documents[i] for i in picked]
 
 
 def _fuse(ranked_lists: list[list[Document]]) -> list[Document]:
@@ -201,9 +211,7 @@ def _fuse(ranked_lists: list[list[Document]]) -> list[Document]:
     return [best[key] for key in order[:TOP_K]]
 
 
-def _search(
-    user_id: int, groups: dict[EmbeddingModel, list[str]], question: str
-) -> list[Document]:
+def _search(groups: dict[EmbeddingModel, list[str]], question: str) -> list[Document]:
     """Retrieval across whichever models hold the searchable documents.
 
     One model is the common case: a single MMR search, one query embedding.
@@ -213,23 +221,24 @@ def _search(
     """
     if len(groups) == 1:
         model, document_ids = next(iter(groups.items()))
-        return _retriever(user_id, model, document_ids, mmr=True).invoke(question)
+        return _retrieve(model, document_ids, question, mmr=True)
 
-    retrievers = [
-        _retriever(user_id, model, document_ids, mmr=False)
-        for model, document_ids in groups.items()
-    ]
-    return _fuse([r.invoke(question) for r in retrievers])
+    return _fuse(
+        [
+            _retrieve(model, document_ids, question, mmr=False)
+            for model, document_ids in groups.items()
+        ]
+    )
 
 
-def _label(user_id: int, documents: list[Document]) -> list[Document]:
+def _label(user_id: int | None, documents: list[Document]) -> list[Document]:
     """Attach each chunk's document id, title and page.
 
     Retrieval knows ids and text, so the chunks arrive anonymous: the prompt
     cannot say which document a passage came from, and a question about which
-    documents exist has nothing to answer from. Scoped to the user by the
-    query, so a chunk belonging to someone else resolves to no title rather
-    than theirs.
+    documents exist has nothing to answer from. Scoped to what the user may
+    read by the query, so a chunk in someone else's private document resolves
+    to no title rather than theirs.
     """
     chunk_ids = [str(document.metadata.get("chunk_id")) for document in documents]
     if not chunk_ids:
@@ -240,7 +249,7 @@ def _label(user_id: int, documents: list[Document]) -> list[Document]:
 
     found = {
         chunk_id: (document_id, title, page)
-        for chunk_id, document_id, title, _, _, page in rows
+        for chunk_id, document_id, title, _, _, page, _ in rows
     }
     for document in documents:
         document_id, title, page = found.get(
@@ -252,59 +261,66 @@ def _label(user_id: int, documents: list[Document]) -> list[Document]:
     return documents
 
 
-def cited_documents(documents: list[Document]) -> list[str]:
-    """The document ids behind the chunks, in the order the prompt numbers them.
+def _unit(vector: list[float]) -> np.ndarray:
+    array = np.array(vector)
+    return array / np.linalg.norm(array)
 
-    First appearance wins, so a passage marked [1] belongs to the
-    best-ranked document. The caller that reads citations back out of an
-    answer numbers from this same list, which is why it is not private.
+
+def drawn_on(documents: list[Document], answer: str) -> list[Document]:
+    """The retrieved passages the answer came from.
+
+    Two checks, both on embeddings: the passage is close to the question, and
+    the answer is close to the passage. The first alone lets through a question
+    that only sounds like the documents -- "tell me a joke" lands near story
+    text -- and an answer saying the passages did not cover the question. The
+    second catches both.
+
+    The answer is embedded once per model, since a vector is only comparable to
+    vectors from the model that produced it.
     """
-    order: list[str] = []
+    answers: dict[int, np.ndarray] = {}
+    used = []
     for document in documents:
-        document_id = document.metadata.get("document_id")
-        if document_id is not None and document_id not in order:
-            order.append(document_id)
-    return order
+        if document.metadata["distance"] > SOURCE_MAX_DISTANCE:
+            continue
+        model = document.metadata["model"]
+        if model.id not in answers:
+            answers[model.id] = _unit(vectors.embeddings_for(model).embed_query(answer))
+        similarity = float(answers[model.id] @ _unit(document.metadata["vector"]))
+        if similarity >= SOURCE_MIN_ANSWER_SIMILARITY:
+            used.append(document)
+    return used
 
 
 def _format(documents: list[Document]) -> str:
     """The retrieved chunks as the prompt should see them.
 
-    Each passage is headed by a citation number and where it came from, so
-    the model can attribute a claim, can answer which documents it has, and
-    can say which of them it actually used. The number is per document, not
-    per passage: two passages from one PDF are one source to cite. Pages are
-    shifted into the PDF's own numbering, which starts at 1.
+    Each passage is headed by where it came from, so the model can attribute
+    a claim and can answer which documents it has. Pages are shifted into the
+    PDF's own numbering, which starts at 1.
 
     Interpolating the list itself instead hands the model a Python repr --
     row ids, chunk ids, the user id -- which it reads as content and reports
     back as though the ids were documents.
     """
-    numbers = {
-        document_id: number
-        for number, document_id in enumerate(cited_documents(documents), 1)
-    }
     blocks = []
     for document in documents:
         title = document.metadata.get("title")
         page = document.metadata.get("page")
-        number = numbers.get(document.metadata.get("document_id"))
-
-        where = f"{title}, p. {page + 1}" if title and page is not None else title or ""
-        header = f"[{number}] {where}".strip() if number else where
+        header = f"{title}, p. {page + 1}" if title and page is not None else title
         blocks.append(
             f"{header}\n{document.page_content}" if header else document.page_content
         )
     return "\n\n".join(blocks)
 
 
-def build_graph(user_id: int, groups: dict[EmbeddingModel, list[str]]):
+def build_graph(user_id: int | None, groups: dict[EmbeddingModel, list[str]]):
     """The chat graph for one request.
 
     Built per request rather than once at startup: which model searches which
     document is stored state the user can change, and a graph cached at
     startup would keep answering from whatever it was then. The expensive
-    parts -- the vector stores, their engine, the LLM clients -- are cached
+    parts -- the embedding services and the LLM clients -- are cached
     underneath, so this is object assembly and no I/O.
 
     The graph carries no history of its own. It is handed the conversation as
@@ -334,7 +350,7 @@ def build_graph(user_id: int, groups: dict[EmbeddingModel, list[str]]):
             return {"context": []}
 
         question = state["messages"][-1].text
-        return {"context": _label(user_id, _search(user_id, groups, question))}
+        return {"context": _label(user_id, _search(groups, question))}
 
     async def answer(state: ChatState) -> dict:
         context = state["context"]

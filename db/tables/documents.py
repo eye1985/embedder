@@ -5,8 +5,8 @@ text is split before it gets here (`indexing/chunk.py`) and embedded after
 (`indexing/embed.py`); this module just reads and writes rows.
 
 Chunks are stored once, independent of any embedding model, which is what lets
-the same document be embedded by OpenAI today and Qwen tomorrow without being
-re-extracted.
+the same document be embedded by one model today and another tomorrow without
+being re-extracted. The vectors are `db/tables/chunk_embeddings.py`.
 """
 
 import json
@@ -29,6 +29,14 @@ def find_document(
     return row[0] if row else None
 
 
+def document_id_taken(conn: psycopg.Connection, document_id: uuid.UUID) -> bool:
+    """Whether any user's document already has this id."""
+    return (
+        conn.execute("select 1 from documents where id = %s", (document_id,)).fetchone()
+        is not None
+    )
+
+
 def count_chunks(conn: psycopg.Connection, document_id: uuid.UUID) -> int:
     return conn.execute(
         "select count(*) from document_chunks where document_id = %s", (document_id,)
@@ -42,6 +50,7 @@ def add_document(
     *,
     title: str | None = None,
     source_uri: str | None = None,
+    visibility: str = "private",
 ) -> uuid.UUID:
     """Store a document and its chunks. No embedding happens here.
 
@@ -50,9 +59,9 @@ def add_document(
     so `chunk_index` reflects that order.
     """
     document_id = conn.execute(
-        "insert into documents (user_id, title, source_uri) "
-        "values (%s, %s, %s) returning id",
-        (user_id, title, source_uri),
+        "insert into documents (user_id, title, source_uri, visibility) "
+        "values (%s, %s, %s, %s) returning id",
+        (user_id, title, source_uri, visibility),
     ).fetchone()[0]
 
     for index, (content, metadata) in enumerate(chunks):
@@ -105,36 +114,6 @@ def restore_document(
         )
 
 
-def unembedded_chunks(
-    conn: psycopg.Connection, document_id: uuid.UUID, table_name: str
-) -> list[tuple[uuid.UUID, str, int]]:
-    """A document's chunks that `table_name` holds no vector for yet.
-
-    Returns (chunk_id, content, user_id). `user_id` comes along because it is a
-    real column on every vector table -- a similarity search filters on columns
-    of its own table, so the owner has to travel with the vector.
-
-    Skipping what is already embedded is what makes re-running cheap, and makes
-    adding a second model embed only what that model is missing.
-
-    `table_name` is interpolated because an identifier cannot be a bound
-    parameter. It comes from the registry, never from a request.
-    """
-    return conn.execute(
-        f"""
-        select c.id, c.content, d.user_id
-        from document_chunks c
-        join documents d on d.id = c.document_id
-        where c.document_id = %s
-          and not exists (
-              select 1 from "{table_name}" v where v.chunk_id = c.id
-          )
-        order by c.chunk_index
-        """,
-        (document_id,),
-    ).fetchall()
-
-
 def get_document(
     conn: psycopg.Connection, user_id: int, document_id: uuid.UUID
 ) -> tuple:
@@ -157,7 +136,7 @@ def get_document(
 def document_rows(conn: psycopg.Connection, user_id: int) -> list[tuple]:
     """The user's documents with chunk counts, newest first.
 
-    Returns (id, title, source_uri, created_at, searchable, chunks).
+    Returns (id, title, source_uri, created_at, searchable, visibility, chunks).
 
     `id` breaks ties on `created_at` so the order is stable: two documents
     imported in the same transaction share a timestamp, and an unstable sort
@@ -166,7 +145,7 @@ def document_rows(conn: psycopg.Connection, user_id: int) -> list[tuple]:
     return conn.execute(
         """
         select d.id::text, d.title, d.source_uri, d.created_at, d.searchable,
-               count(c.id)
+               d.visibility, count(c.id)
         from documents d
         left join document_chunks c on c.document_id = d.id
         where d.user_id = %s
@@ -187,128 +166,34 @@ def chunk_rows(conn: psycopg.Connection, document_id: uuid.UUID) -> list[tuple]:
 
 
 def cited_chunks(
-    conn: psycopg.Connection, user_id: int, chunk_ids: list[str]
+    conn: psycopg.Connection, user_id: int | None, chunk_ids: list[str]
 ) -> list[tuple]:
     """Retrieved chunks resolved to their documents.
 
-    Returns (chunk_id, document_id, title, source_uri, origin, page). `page`
-    is left as the extractor stored it, which is 0-indexed, and `origin` says
-    whether a PDF was ever stored for this document at all.
+    Returns (chunk_id, document_id, title, source_uri, origin, page, owned).
+    `page` is left as the extractor stored it, which is 0-indexed, `origin`
+    says whether a PDF was ever stored for this document at all, and `owned`
+    whether it is the user's own. Signed out (`user_id` None), only public
+    documents resolve.
 
-    Scoped to the user, so a chunk_id belonging to someone else returns no row
-    rather than its document's title. Only the page is read out of `metadata`:
-    the rest of it holds absolute local paths.
+    Scoped to what the user may read -- their own documents and public ones --
+    so a chunk_id in someone else's private document returns no row rather
+    than its title. Only the page is read out of `metadata`: the rest of it
+    holds absolute local paths.
     """
     if not chunk_ids:
         return []
     return conn.execute(
         """
         select c.id::text, d.id::text, d.title, d.source_uri, d.origin,
-               (c.metadata->>'page')::int
+               (c.metadata->>'page')::int, coalesce(d.user_id = %(user)s, false)
         from document_chunks c
         join documents d on d.id = c.document_id
-        where c.id = any(%s::uuid[]) and d.user_id = %s
+        where c.id = any(%(chunks)s::uuid[])
+          and (d.user_id = %(user)s or d.visibility = 'public')
         """,
-        (chunk_ids, user_id),
+        {"chunks": chunk_ids, "user": user_id},
     ).fetchall()
-
-
-def vector_rows(
-    conn: psycopg.Connection, document_id: uuid.UUID, table_name: str
-) -> list[tuple]:
-    """One model's vectors for a document: (chunk_id, vector) pairs.
-
-    `embedding::text` is pgvector's own text form, "[0.1,-0.2]" -- already
-    valid JSON, so the floats come back without registering a type adapter.
-
-    `table_name` comes from the registry, never from a request.
-    """
-    return conn.execute(
-        f"""
-        select v.chunk_id::text, v.embedding::text
-        from "{table_name}" v
-        where v.document_id = %s
-        """,
-        (document_id,),
-    ).fetchall()
-
-
-def insert_vectors(
-    conn: psycopg.Connection,
-    table_name: str,
-    rows: Iterable[tuple[uuid.UUID, int, uuid.UUID, str, list[float]]],
-) -> int:
-    """Write vectors straight into a model's table. Returns how many landed.
-
-    The one path into a vector table that does not go through PGVectorStore,
-    because restoring an export has nothing to embed -- the vectors are in the
-    file. `rows` is (chunk_id, user_id, document_id, content, vector).
-
-    `content` is duplicated from the chunk and `langchain_metadata` is an empty
-    object, which is exactly what the store writes for these columns.
-
-    The vector is bound as pgvector's own text form and cast; a halfvec column
-    takes the same literal through the implicit cast from vector.
-
-    `table_name` comes from the registry, never from a request.
-    """
-    written = 0
-    for chunk_id, user_id, document_id, content, vector in rows:
-        conn.execute(
-            f"""
-            insert into "{table_name}"
-                (content, embedding, chunk_id, user_id, document_id,
-                 langchain_metadata)
-            values (%s, %s::vector, %s, %s, %s, '{{}}'::jsonb)
-            """,
-            (
-                content,
-                json.dumps(vector, separators=(",", ":")),
-                chunk_id,
-                user_id,
-                document_id,
-            ),
-        )
-        written += 1
-    return written
-
-
-def embedded_counts(
-    conn: psycopg.Connection, user_id: int, table_names: Iterable[str]
-) -> dict[str, dict[str, int]]:
-    """Per table, how many chunks of each of the user's documents it embedded.
-
-    One query per model rather than a scalar subquery per model per document:
-    there are only a handful of models, and this keeps each query readable.
-
-    Table names come from the registry, never from a request.
-    """
-    counts: dict[str, dict[str, int]] = {}
-    for table_name in table_names:
-        rows = conn.execute(
-            f"""
-            select v.document_id::text, count(*)
-            from "{table_name}" v
-            where v.user_id = %s
-            group by v.document_id
-            """,
-            (user_id,),
-        ).fetchall()
-        counts[table_name] = dict(rows)
-    return counts
-
-
-def delete_vectors(
-    conn: psycopg.Connection, document_id: uuid.UUID, table_name: str
-) -> int:
-    """Drop one model's vectors for a document. Returns how many went.
-
-    The chunks survive, so the text does not need re-extracting.
-    """
-    cursor = conn.execute(
-        f'delete from "{table_name}" where document_id = %s', (document_id,)
-    )
-    return cursor.rowcount
 
 
 def set_searchable(
@@ -328,35 +213,30 @@ def set_searchable(
         raise LookupError(f"No document {document_id} for this user.")
 
 
+def set_visibility(
+    conn: psycopg.Connection, user_id: int, document_id: uuid.UUID, visibility: str
+) -> None:
+    """Open a document to everyone's chat, or keep it to the owner's.
+
+    Raises LookupError if the document is not the user's.
+    """
+    updated = conn.execute(
+        "update documents set visibility = %s where id = %s and user_id = %s",
+        (visibility, document_id, user_id),
+    ).rowcount
+    if not updated:
+        raise LookupError(f"No document {document_id} for this user.")
+
+
 def delete_document(
     conn: psycopg.Connection, user_id: int, document_id: uuid.UUID
 ) -> None:
     """Delete a document row, and with it everything that hangs off it.
 
-    One statement does the whole database half: `document_chunks` cascades from
-    `documents`, and every vector table cascades from `document_chunks`, so the
-    vectors go with the row that owns them. The stored PDF is not touched here.
+    One statement does the whole database half: `document_chunks` and
+    `chunk_embeddings` cascade from `documents`, so the vectors go with the row
+    that owns them. The stored PDF is not touched here.
     """
     conn.execute(
         "delete from documents where id = %s and user_id = %s", (document_id, user_id)
     )
-
-
-def has_any_vector(
-    conn: psycopg.Connection, document_id: uuid.UUID, table_names: Iterable[str]
-) -> bool:
-    """Whether any of these models holds a vector for this document.
-
-    Every model is checked, not just the default: an upload can name several,
-    and one that got through means the import was not wasted.
-
-    Table names come from the registry, never from a request.
-    """
-    for table_name in table_names:
-        found = conn.execute(
-            f'select 1 from "{table_name}" where document_id = %s limit 1',
-            (document_id,),
-        ).fetchone()
-        if found is not None:
-            return True
-    return False

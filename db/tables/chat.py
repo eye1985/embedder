@@ -32,7 +32,7 @@ def title_from(question: str) -> str:
 
 
 def get_conversation(
-    conn: psycopg.Connection, user_id: int, conversation_id: uuid.UUID
+    conn: psycopg.Connection, user_id: int | None, conversation_id: uuid.UUID
 ) -> tuple[uuid.UUID, str | None, str | None, int] | None:
     """One of the user's conversations: (id, title, summary, summarized).
 

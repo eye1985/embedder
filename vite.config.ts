@@ -28,6 +28,7 @@ export default defineConfig({
         documents: here("frontend/pages/documents.ts"),
         upload: here("frontend/pages/upload.ts"),
         jobs: here("frontend/pages/jobs.ts"),
+        login: here("frontend/pages/login.ts"),
       },
     },
   },

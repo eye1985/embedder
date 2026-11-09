@@ -1,16 +1,24 @@
 {% extends "base.html" %}
-{% block app_class %} chat{% endblock %}
+{% block app_class %} chat{% if not signed_in %} guest{% endif %}{% endblock %}
 
 {% block content %}
-{# Placed by the grid in styles/layout.css, not by where it sits here. #}
+{# Placed by the grid in styles/layout.css, not by where it sits here.
+   Signed out there are no saved conversations, so no sidebar. #}
+{% if signed_in %}
 <aside id="conversations" class="conversations"></aside>
+{% endif %}
 
 <div id="messages" class="messages">
   <div class="empty">
     <p class="empty-title">Ask a question</p>
     <p class="empty-note">
-      Answers are drawn from the documents you have ingested, with the
-      passages retrieved before the model replies.
+      {% if signed_in %}
+      Answers are drawn from your documents and the ones others have made
+      public, with the passages retrieved before the model replies.
+      {% else %}
+      Answers are drawn from the documents people have made public. Sign in
+      to search your own and keep your conversations.
+      {% endif %}
     </p>
   </div>
 </div>

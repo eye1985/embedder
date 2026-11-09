@@ -1,24 +1,18 @@
 """Reads the `embedding_models` table.
 
-Every embedding type in the system is one row here, and each row owns exactly
-one physical vector table named by `table_name`. Postgres cannot enforce that
-link, so `db/setup.py` is what keeps the two in sync.
+Every embedding model in the system is one row here. Its vectors live in
+`chunk_embeddings`, in the column its width decides.
 """
 
 from dataclasses import dataclass
 
 import psycopg
 
-_COLUMNS = "id, provider, model_name, dimensions, table_name, distance, is_active"
+_COLUMNS = "id, provider, model_name, dimensions, distance, is_active"
 
-
-def table_exists(conn: psycopg.Connection, table_name: str) -> bool:
-    row = conn.execute(
-        "select 1 from information_schema.tables "
-        "where table_schema = 'public' and table_name = %s",
-        (table_name,),
-    ).fetchone()
-    return row is not None
+# The widest column each element type can index with HNSW. `vector` holds 4
+# bytes per dimension, `halfvec` 2, which is why halfvec reaches twice as far.
+MAX_VECTOR_DIMENSIONS = 2000
 
 
 @dataclass(frozen=True)
@@ -27,9 +21,26 @@ class EmbeddingModel:
     provider: str
     model_name: str
     dimensions: int
-    table_name: str
     distance: str
     is_active: bool
+
+    @property
+    def label(self) -> str:
+        """How the model is named outside the database: in the API, the
+        export, and job history."""
+        return f"{self.provider}/{self.model_name}@{self.dimensions}"
+
+    @property
+    def element(self) -> str:
+        """`vector` up to 2000 dimensions, `halfvec` above, where `vector`
+        can no longer be indexed. halfvec rounds to fp16, which moves a cosine
+        score by ~1e-6 and leaves the top-k ordering intact."""
+        return "vector" if self.dimensions <= MAX_VECTOR_DIMENSIONS else "halfvec"
+
+    @property
+    def column(self) -> str:
+        """The `chunk_embeddings` column this model's vectors are stored in."""
+        return "embedding" if self.element == "vector" else "embedding_half"
 
 
 def _row(row) -> EmbeddingModel:
@@ -50,19 +61,20 @@ def get_model(
     conn: psycopg.Connection,
     *,
     model_id: int | None = None,
-    table_name: str | None = None,
     provider: str | None = None,
     model_name: str | None = None,
+    dimensions: int | None = None,
 ) -> EmbeddingModel:
-    """Look a model up by id, by table name, or by provider + model name."""
+    """Look a model up by id, or by provider + model name + dimensions."""
     if model_id is not None:
         where, params = "id = %s", (model_id,)
-    elif table_name is not None:
-        where, params = "table_name = %s", (table_name,)
-    elif provider is not None and model_name is not None:
-        where, params = "provider = %s and model_name = %s", (provider, model_name)
+    elif provider is not None and model_name is not None and dimensions is not None:
+        where = "provider = %s and model_name = %s and dimensions = %s"
+        params = (provider, model_name, dimensions)
     else:
-        raise ValueError("Pass model_id, table_name, or both provider and model_name.")
+        raise ValueError(
+            "Pass model_id, or provider, model_name and dimensions together."
+        )
 
     row = conn.execute(
         f"select {_COLUMNS} from embedding_models where {where}", params
@@ -72,33 +84,11 @@ def get_model(
     return _row(row)
 
 
-def _user_model(conn: psycopg.Connection, user_id: int, column: str) -> EmbeddingModel:
-    """The model named by one of the user's model columns.
-
-    `column` is a literal from this module, never from a request.
-    """
+def upload_model_for_user(conn: psycopg.Connection, user_id: int) -> EmbeddingModel:
+    """The model the upload form pre-selects, and what /upload falls back to."""
     row = conn.execute(
-        f"select {column} from users where id = %s", (user_id,)
+        "select upload_model_id from users where id = %s", (user_id,)
     ).fetchone()
     if row is None:
         raise LookupError(f"No user with id {user_id}.")
     return get_model(conn, model_id=row[0])
-
-
-def upload_model_for_user(conn: psycopg.Connection, user_id: int) -> EmbeddingModel:
-    """The model the upload form pre-selects, and what /upload falls back to."""
-    return _user_model(conn, user_id, "upload_model_id")
-
-
-def models_with_tables(conn: psycopg.Connection) -> list[EmbeddingModel]:
-    """Registered models whose vector table actually exists.
-
-    `list_models(active_only=False)` includes rows that were never set up --
-    `db/setup.py` creates tables for active models only -- and querying a
-    missing table raises, so those rows are dropped before any count or read.
-    """
-    return [
-        m
-        for m in list_models(conn, active_only=False)
-        if table_exists(conn, m.table_name)
-    ]

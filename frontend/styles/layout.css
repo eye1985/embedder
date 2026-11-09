@@ -91,6 +91,23 @@
   }
 }
 
+/* Signed out: no sidebar, so one column at the width of the other pages. */
+.app.chat.guest {
+  max-width: 52rem;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr auto;
+}
+
+.app.chat.guest .messages {
+  grid-column: 1;
+  grid-row: 2;
+}
+
+.app.chat.guest .composer {
+  grid-column: 1;
+  grid-row: 3;
+}
+
 /* Naming the header keeps it out of the `root` snapshot, so it cross-fades on
    its own 160ms timing -- only the title and which link is current differ. */
 .header {
@@ -140,6 +157,24 @@
 .nav a.current {
   color: var(--fg);
   border-bottom-color: var(--highlight);
+}
+
+.nav-account {
+  margin-left: auto;
+}
+
+.sign-in {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
+  padding-block: var(--sp-5);
+}
+
+.sign-in-lead {
+  margin: 0;
+  max-width: 36rem;
+  line-height: 1.7;
+  color: var(--fg-2);
 }
 
 /* Documents toolbar: summary line and download-all. */

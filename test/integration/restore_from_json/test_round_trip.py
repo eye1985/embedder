@@ -27,7 +27,7 @@ def test_a_document_survives_a_download_and_an_upload(conn, client, small_model)
     document_id = a_document(conn, title="Nutrition", chunks=4)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     original = an_export(client, document_id)
 
@@ -49,7 +49,7 @@ def test_every_model_in_the_file_comes_back(conn, client, small_model, large_mod
     for model in (small_model, large_model):
         client.post(
             f"/api/documents/{document_id}/embeddings",
-            json={"models": [model.table_name]},
+            json={"models": [model.id]},
         )
     original = an_export(client, document_id)
 
@@ -57,14 +57,14 @@ def test_every_model_in_the_file_comes_back(conn, client, small_model, large_mod
     response = restore_from_json(client, original)
 
     assert response.json()["embedded"] == {
-        small_model.table_name: 3,
-        large_model.table_name: 3,
+        small_model.label: 3,
+        large_model.label: 3,
     }
-    assert vector_count(conn, small_model.table_name, document_id) == 3
-    assert vector_count(conn, large_model.table_name, document_id) == 3
+    assert vector_count(conn, small_model, document_id) == 3
+    assert vector_count(conn, large_model, document_id) == 3
     assert embedded_models(conn, document_id) == {
-        small_model.table_name,
-        large_model.table_name,
+        small_model.label,
+        large_model.label,
     }
     assert an_export(client, document_id) == original
 
@@ -83,17 +83,17 @@ def test_a_restored_document_is_searchable_through_the_first_model_listed(
     for model in (small_model, large_model):
         client.post(
             f"/api/documents/{document_id}/embeddings",
-            json={"models": [model.table_name]},
+            json={"models": [model.id]},
         )
-    client.put(f"/api/documents/{document_id}/search-model/{large_model.table_name}")
+    client.put(f"/api/documents/{document_id}/search-model/{large_model.id}")
     client.patch(f"/api/documents/{document_id}", json={"searchable": False})
 
     original = an_export(client, document_id)
     client.delete(f"/api/documents/{document_id}")
     response = restore_from_json(client, original)
 
-    assert response.json()["search_model"] == small_model.table_name
-    assert enabled_models(conn, document_id) == {small_model.table_name}
+    assert response.json()["search_model"] == small_model.label
+    assert enabled_models(conn, document_id) == {small_model.label}
 
     conn.rollback()
     searchable = conn.execute(
@@ -124,7 +124,7 @@ def test_the_export_does_not_depend_on_where_the_server_runs(
     )
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     original = an_export(client, document_id)
     assert json.loads(original)["chunks"][0]["metadata"] == {
@@ -149,7 +149,7 @@ def test_a_document_with_no_vectors_restores_its_chunks(conn, client, small_mode
     document_id = a_document(conn, title="Nutrition", chunks=3)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     client.delete(f"/api/documents/{document_id}/embeddings")
 
@@ -179,7 +179,7 @@ def test_a_restored_document_says_where_its_rows_came_from(conn, client, small_m
     document_id = a_document(conn, title="Nutrition", chunks=2)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
 
     conn.rollback()

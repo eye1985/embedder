@@ -22,7 +22,7 @@ def test_overwriting_replaces_the_stored_document(conn, client, small_model):
     document_id = a_document(conn, title="Nutrition", chunks=4)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
 
     payload = json.loads(an_export(client, document_id))
@@ -33,7 +33,7 @@ def test_overwriting_replaces_the_stored_document(conn, client, small_model):
     assert response.status_code == 200, response.text
     assert response.json()["replaced_existing"] is True
     assert response.json()["chunks"] == 2
-    assert vector_count(conn, small_model.table_name, document_id) == 2
+    assert vector_count(conn, small_model, document_id) == 2
     # Parsed, not byte-compared: this file was rebuilt here, so its spacing is
     # this test's rather than the server's. The round-trip tests are the ones
     # that compare bytes, and both sides of those come from the server.
@@ -53,7 +53,7 @@ def test_overwriting_keeps_the_pdf_the_document_came_from(
     document_id = a_document(conn, title="Nutrition", chunks=2, source_uri=source_uri)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     original = an_export(client, document_id)
 
@@ -68,7 +68,7 @@ def test_overwriting_nothing_is_just_an_import(conn, client, small_model):
     document_id = a_document(conn, title="Nutrition", chunks=3)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     original = an_export(client, document_id)
     client.delete(f"/api/documents/{document_id}")
@@ -92,23 +92,19 @@ def test_a_refused_overwrite_leaves_the_stored_document_alone(
     document_id = a_document(conn, title="Nutrition", chunks=3)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     original = an_export(client, document_id)
 
     payload = json.loads(original)
-    payload["models"]["emb_imaginary"] = payload["models"].pop(small_model.table_name)
-    for chunk in payload["chunks"]:
-        chunk["embeddings"]["emb_imaginary"] = chunk["embeddings"].pop(
-            small_model.table_name
-        )
+    payload["models"][small_model.label]["model_name"] = "imaginary-model"
 
     response = restore_from_json(client, json.dumps(payload).encode(), overwrite=True)
 
     assert response.status_code == 404
     assert an_export(client, document_id) == original
-    assert vector_count(conn, small_model.table_name, document_id) == 3
-    assert embedded_models(conn, document_id) == {small_model.table_name}
+    assert vector_count(conn, small_model, document_id) == 3
+    assert embedded_models(conn, document_id) == {small_model.label}
 
 
 def test_overwriting_a_different_id_over_the_same_pdf(conn, client, small_model):
@@ -121,7 +117,7 @@ def test_overwriting_a_different_id_over_the_same_pdf(conn, client, small_model)
     document_id = a_document(conn, title="Nutrition", chunks=3)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     payload = json.loads(an_export(client, document_id))
     payload["document"]["id"] = "11111111-1111-1111-1111-111111111111"

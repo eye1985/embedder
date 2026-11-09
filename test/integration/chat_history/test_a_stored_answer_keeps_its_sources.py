@@ -20,16 +20,17 @@ import uuid
 import pytest
 from langchain_core.documents import Document
 
-from api.config import CURRENT_USER_ID
-from api.routes.chat import citations_from
+from api.routes.chat import citations_from, store
 from api.services.conversations import read_conversation
+from db import vectors
 from db.tables.chat import message_rows, store_turn
 from db.tables.documents import chunk_rows
+from db.tables.registry import get_model
 from llm.chat import _label
-from test.factories import a_document, an_export, restore_from_json
+from test.factories import TEST_USER_ID, a_document, an_export, restore_from_json
 
 A_QUESTION = "What does it say about nutrition?"
-AN_ANSWER = "It covers the basics [1]."
+AN_ANSWER = "It covers the basics."
 
 
 def a_stored_turn(conn, document_id, *, question=A_QUESTION, answer=AN_ANSWER):
@@ -37,19 +38,31 @@ def a_stored_turn(conn, document_id, *, question=A_QUESTION, answer=AN_ANSWER):
 
     The citations go through `citations_from` over labelled chunks, which is
     the real live path -- a hand-written citation list would prove the storage
-    works and not that what the route stores is what it resolves.
+    works and not that what the route stores is what it resolves. Each chunk
+    carries the answer's own vector, so the answer counts as drawing on all of
+    them.
     """
     conn.rollback()
+    model = get_model(conn, model_id=1)
+    drawn = vectors.embeddings_for(model).embed_query(answer)
     documents = _label(
-        CURRENT_USER_ID,
+        TEST_USER_ID,
         [
-            Document(page_content=content, metadata={"chunk_id": chunk_id})
+            Document(
+                page_content=content,
+                metadata={
+                    "chunk_id": chunk_id,
+                    "distance": 0.0,
+                    "model": model,
+                    "vector": drawn,
+                },
+            )
             for chunk_id, _index, content, _metadata in chunk_rows(conn, document_id)
         ],
     )
     conversation_id = store_turn(
         conn,
-        CURRENT_USER_ID,
+        TEST_USER_ID,
         None,
         question,
         answer,
@@ -64,7 +77,7 @@ def a_stored_turn(conn, document_id, *, question=A_QUESTION, answer=AN_ANSWER):
 def answer_sources(conn, conversation_id):
     """The sources on the one answer in a stored conversation."""
     conn.rollback()
-    found = read_conversation(conn, CURRENT_USER_ID, conversation_id)
+    found = read_conversation(conn, TEST_USER_ID, conversation_id)
     (answer,) = [m for m in found["messages"] if m["role"] == "assistant"]
     return answer["sources"]
 
@@ -83,7 +96,7 @@ def test_a_citation_survives_a_delete_and_a_reimport(
     document_id = a_document(conn, title="Nutrition", chunks=3, source_uri=source_uri)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     exported = an_export(client, document_id)
     conversation_id = a_stored_turn(conn, document_id)
@@ -158,9 +171,49 @@ def test_a_question_is_stored_with_its_answer_and_nothing_else(
     ]
     assert rows[0][2] == A_QUESTION
     assert rows[0][3] == []
-    assert rows[1][2] == AN_ANSWER, (
-        "the answer is stored as the model wrote it, markers and all"
+    assert rows[1][2] == AN_ANSWER
+
+
+def test_a_turn_is_stored_when_its_sources_cannot_be_worked_out(
+    conn, client, monkeypatch
+):
+    """Working out the sources embeds the answer. If that fails, the turn the
+    user has already read is stored without sources rather than lost."""
+    document_id = a_document(conn, title="Nutrition", chunks=3)
+    conn.rollback()
+    model = get_model(conn, model_id=1)
+    retrieved = _label(
+        TEST_USER_ID,
+        [
+            Document(
+                page_content=content,
+                metadata={
+                    "chunk_id": chunk_id,
+                    "distance": 0.0,
+                    "model": model,
+                    "vector": vectors.embeddings_for(model).embed_query(content),
+                },
+            )
+            for chunk_id, _index, content, _metadata in chunk_rows(conn, document_id)
+        ],
     )
+
+    def unavailable(model):
+        raise RuntimeError("embedding service down")
+
+    monkeypatch.setattr(vectors, "embeddings_for", unavailable)
+
+    conversation_id, sources = store(
+        TEST_USER_ID, None, A_QUESTION, AN_ANSWER, retrieved, None, 0
+    )
+
+    assert sources == []
+    conn.rollback()
+    rows = message_rows(conn, conversation_id)
+    assert [(role, content, citations) for _seq, role, content, citations in rows] == [
+        ("user", A_QUESTION, []),
+        ("assistant", AN_ANSWER, []),
+    ]
 
 
 def test_a_conversation_is_named_after_the_question_that_opened_it(conn, client):
@@ -169,7 +222,7 @@ def test_a_conversation_is_named_after_the_question_that_opened_it(conn, client)
     conversation_id = a_stored_turn(conn, document_id)
 
     conn.rollback()
-    found = read_conversation(conn, CURRENT_USER_ID, conversation_id)
+    found = read_conversation(conn, TEST_USER_ID, conversation_id)
     assert found["title"] == A_QUESTION
 
 
@@ -185,10 +238,10 @@ def test_a_second_turn_continues_the_same_conversation(conn, client):
 
     store_turn(
         conn,
-        CURRENT_USER_ID,
+        TEST_USER_ID,
         conversation_id,
         "And the second thing?",
-        "Also covered [1].",
+        "Also covered.",
         [],
         summary=None,
         summarized=0,
@@ -209,6 +262,6 @@ def test_another_users_conversation_is_absent_rather_than_theirs(conn, client, m
 
     conn.rollback()
     if missing == "conversation":
-        assert read_conversation(conn, CURRENT_USER_ID, uuid.uuid4()) is None
+        assert read_conversation(conn, TEST_USER_ID, uuid.uuid4()) is None
     else:
-        assert read_conversation(conn, CURRENT_USER_ID + 1, conversation_id) is None
+        assert read_conversation(conn, TEST_USER_ID + 1, conversation_id) is None

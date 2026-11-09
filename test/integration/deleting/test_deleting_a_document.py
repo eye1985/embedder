@@ -1,7 +1,7 @@
 """Delete means gone: the rows, the vectors, and the file on disk.
 
-One statement does the database half -- `document_chunks` cascades from
-`documents` and every vector table cascades from `document_chunks` -- so what
+One statement does the database half -- `document_chunks` and
+`chunk_embeddings` cascade from `documents` -- so what
 needs asserting is that all three actually went, in one place, rather than
 each being assumed by the tests that happen to delete something on their way
 to checking something else.
@@ -26,7 +26,7 @@ def test_deleting_removes_the_pdf_and_everything_in_the_database(
     document_id = a_document(conn, title="Nutrition", chunks=3, source_uri=source_uri)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     assert path.is_file(), "arranged wrong if the file is not there to begin with"
 
@@ -39,11 +39,11 @@ def test_deleting_removes_the_pdf_and_everything_in_the_database(
     assert body["deleted_chunks"] == 3
     # Keyed by every model with a table, so the zeros belong to models that
     # never embedded this document rather than to the delete.
-    assert body["deleted_embeddings"][small_model.table_name] == 3
+    assert body["deleted_embeddings"][small_model.label] == 3
 
     conn.rollback()
     assert count_chunks(conn, document_id) == 0
-    assert vector_count(conn, small_model.table_name, document_id) == 0
+    assert vector_count(conn, small_model, document_id) == 0
     assert client.get(f"/api/documents/{document_id}/embeddings").status_code == 404
 
 
@@ -57,7 +57,7 @@ def test_deleting_a_document_with_no_stored_file_still_deletes_the_rows(
     )
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
 
     response = client.delete(f"/api/documents/{document_id}")
@@ -68,4 +68,4 @@ def test_deleting_a_document_with_no_stored_file_still_deletes_the_rows(
 
     conn.rollback()
     assert count_chunks(conn, document_id) == 0
-    assert vector_count(conn, small_model.table_name, document_id) == 0
+    assert vector_count(conn, small_model, document_id) == 0

@@ -17,7 +17,7 @@ def an_exported_file(conn, client, small_model):
     document_id = a_document(conn, title="Nutrition", chunks=3)
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [small_model.table_name]},
+        json={"models": [small_model.id]},
     )
     data = an_export(client, document_id)
     client.delete(f"/api/documents/{document_id}")

@@ -21,11 +21,11 @@ def test_the_source_pdf_is_never_read_again(conn, client, large_model):
 
     response = client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [large_model.table_name]},
+        json={"models": [large_model.id]},
     )
 
     assert response.status_code == 200
-    assert response.json()["embedded"] == {large_model.table_name: 3}
+    assert response.json()["embedded"] == {large_model.label: 3}
 
 
 def test_each_chunk_gets_its_own_vector(conn, client, large_model):
@@ -38,18 +38,19 @@ def test_each_chunk_gets_its_own_vector(conn, client, large_model):
 
     client.post(
         f"/api/documents/{document_id}/embeddings",
-        json={"models": [large_model.table_name]},
+        json={"models": [large_model.id]},
     )
 
     conn.rollback()
     rows, chunks, distinct, dims = conn.execute(
-        f"""
-        select count(*), count(distinct chunk_id), count(distinct embedding::text),
-               max(vector_dims(embedding))
-        from "{large_model.table_name}"
-        where document_id = %s
+        """
+        select count(*), count(distinct chunk_id),
+               count(distinct embedding_half::text),
+               max(vector_dims(embedding_half))
+        from chunk_embeddings
+        where document_id = %s and model_id = %s
         """,
-        (document_id,),
+        (document_id, large_model.id),
     ).fetchone()
 
     assert rows == 4
