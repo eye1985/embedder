@@ -1,0 +1,16 @@
+.git
+.venv
+.idea
+.claude
+.env
+.DS_Store
+.pytest_cache
+.ruff_cache
+__pycache__
+node_modules
+static
+uploads
+sample
+test
+openapi.json
+CLAUDE.md
