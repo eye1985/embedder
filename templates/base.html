@@ -26,7 +26,10 @@
     <main class="app{% block app_class %}{% endblock %}">
       <header class="header">
         <div class="masthead">
-          <h1>{{ heading }}</h1>
+          <div class="title">
+            <h1>{{ heading }}</h1>
+            <span class="beta">Beta</span>
+          </div>
         </div>
         {# The only copy of the nav: adding a page is one entry here. #}
         <nav class="nav">
